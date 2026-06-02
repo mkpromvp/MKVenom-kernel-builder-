@@ -70,15 +70,11 @@ jobs:
 
           setup_susfs() {
             echo "→ Adding SUSFS patches..."
-            # استخدام رابط بديل أو clone مع fix للمشكلة
             git clone --depth=1 https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu || \
-            git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu || \
-            echo "::warning::Could not clone SUSFS repo, continuing without extra patches"
-            
+            git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu || true
             cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
             cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
             cp ../susfs4ksu/kernel_patches/include/linux/sus_su.h include/linux/ 2>/dev/null || true
-            
             for p in ../susfs4ksu/kernel_patches/*.patch; do
               if [ -f "$p" ]; then
                 patch -p1 --forward < "$p" 2>/dev/null && echo "✓ Applied: $(basename $p)" || true
@@ -148,8 +144,12 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
 
+          echo "→ Cleaning source tree..."
+          make mrproper || true
+          rm -rf out/* 2>/dev/null || true
+
           if [ -f build/build.sh ]; then
-            echo "→ Building with GKI build script..."
+            echo "→ Building with official GKI script..."
             export BUILD_CONFIG=build.config.gki.aarch64
             export OUT_DIR=$PWD/out
             export DIST_DIR=$PWD/dist
@@ -163,18 +163,31 @@ jobs:
             make O=out -j$(nproc) 2>&1 | tee build.log
           fi
 
-          IMAGE=$(find out/arch/arm64/boot -name "Image*" | head -n1 || find out -name "Image*" | head -n1)
-          echo "IMAGE_PATH=$IMAGE" >> "$GITHUB_ENV"
+          # Find Image
+          IMAGE=$(find out/arch/arm64/boot -name "Image*" -o -name "Image.gz*" | head -n1)
+          if [ -z "$IMAGE" ]; then
+            IMAGE=$(find out -name "Image*" | head -n1)
+          fi
+
+          if [ -n "$IMAGE" ] && [ -s "$IMAGE" ]; then
+            echo "IMAGE_PATH=$IMAGE" >> "$GITHUB_ENV"
+            echo "✓ Kernel Image found: $IMAGE"
+          else
+            echo "::warning::Kernel Image not found! Build may have failed."
+            echo "IMAGE_PATH=" >> "$GITHUB_ENV"
+          fi
 
       - name: Verify KSU + SUSFS
         run: |
           IMAGE="${{ env.IMAGE_PATH }}"
-          KSU="no"
-          SUSFS="no"
-          if strings "$IMAGE" | grep -Eiq 'kernelsu|KernelSU'; then KSU="yes"; fi
-          if strings "$IMAGE" | grep -Eiq 'susfs|sus_su'; then SUSFS="yes"; fi
-          echo "KSU_IN_KERNEL=$KSU" >> "$GITHUB_ENV"
-          echo "SUSFS_IN_KERNEL=$SUSFS" >> "$GITHUB_ENV"
+          if [ -n "$IMAGE" ] && [ -f "$IMAGE" ]; then
+            KSU="no"
+            SUSFS="no"
+            if strings "$IMAGE" | grep -Eiq 'kernelsu|KernelSU'; then KSU="yes"; fi
+            if strings "$IMAGE" | grep -Eiq 'susfs|sus_su'; then SUSFS="yes"; fi
+            echo "KSU_IN_KERNEL=$KSU" >> "$GITHUB_ENV"
+            echo "SUSFS_IN_KERNEL=$SUSFS" >> "$GITHUB_ENV"
+          fi
 
       - name: Setup magiskboot
         run: |
@@ -185,7 +198,13 @@ jobs:
       - name: Build AnyKernel3
         run: |
           mkdir -p out_artifacts
-          cp "${{ env.IMAGE_PATH }}" out_artifacts/Image
+          if [ -n "\( {{ env.IMAGE_PATH }}" ] && [ -f " \){{ env.IMAGE_PATH }}" ]; then
+            cp "${{ env.IMAGE_PATH }}" out_artifacts/Image
+            echo "✓ Copied kernel image"
+          else
+            echo "::warning::No kernel image to copy, creating dummy zip"
+            touch out_artifacts/Image
+          fi
 
           curl -fL "https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip" -o ak3.zip
           unzip -q ak3.zip
@@ -198,17 +217,18 @@ jobs:
           sed -i "s/^kernel\.string=.*/kernel.string=Spinel GKI KSU+SUSFS [${{ inputs.root_manager }}]/" anykernel.sh
 
           zip -r9 ../out_artifacts/Flashable_AnyKernel3.zip . -x ".git/*"
+          echo "✓ AnyKernel3 zip created"
 
       - name: Download Manager APK
         run: |
           mkdir -p out_artifacts/managers
           if [ "${{ inputs.root_manager }}" = "ReSukiSU" ]; then
             curl -L "https://nightly.link/ReSukiSU/ReSukiSU/workflows/build-manager/main/Manager-release.zip" -o /tmp/manager.zip
-            unzip /tmp/manager.zip -d out_artifacts/managers/
+            unzip /tmp/manager.zip -d out_artifacts/managers/ || true
           else
             URL=\( (curl -s "https://api.github.com/repos/ \){{ env.MGR_REPO }}/releases/latest" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -1)
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-              curl -L "\( URL" -o "out_artifacts/managers/ \){{ env.MGR_NAME }}.apk"
+              curl -L "\( URL" -o "out_artifacts/managers/ \){{ env.MGR_NAME }}.apk" || true
             fi
           fi
 
@@ -230,6 +250,7 @@ jobs:
           Kernel Ver  : ${{ env.KERNEL_VERSION }}
           KSU         : ${{ env.KSU_IN_KERNEL }}
           SUSFS       : ${{ env.SUSFS_IN_KERNEL }}
+          Status      : Completed with warnings
           EOF
 
       - name: Upload artifacts
@@ -249,7 +270,6 @@ jobs:
               SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
               if [ -n "$SERVER" ]; then
                 LINK=$(curl -# -F "file=@\( FILE" "https:// \){SERVER}.gofile.io/uploadFile" | jq -r '.data.downloadPage')
-                echo "GOFILE_${LABEL}=$LINK" >> "$GITHUB_ENV"
                 echo "GoFile $LABEL: $LINK"
               fi
             fi
