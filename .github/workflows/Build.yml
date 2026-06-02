@@ -54,10 +54,8 @@ jobs:
 
       - name: Clone kernel source
         run: |
-          git clone --depth=1 \
-            --branch "${{ inputs.kernel_branch }}" \
-            "${{ inputs.kernel_source_url }}" \
-            kernel_src
+          echo "Cloning ${{ inputs.kernel_source_url }} - Branch: ${{ inputs.kernel_branch }}"
+          git clone --depth=1 --branch "\( {{ inputs.kernel_branch }}" " \){{ inputs.kernel_source_url }}" kernel_src
           echo "KERNEL_DIR=$PWD/kernel_src" >> "$GITHUB_ENV"
           cd kernel_src
           VER=$(make kernelversion 2>/dev/null || echo "unknown")
@@ -144,12 +142,13 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
 
-          echo "→ Cleaning source tree..."
-          make mrproper || true
-          rm -rf out/* 2>/dev/null || true
+          echo "→ Cleaning source..."
+          make mrproper 2>/dev/null || true
+          rm -rf out 2>/dev/null || true
+          mkdir -p out
 
           if [ -f build/build.sh ]; then
-            echo "→ Building with official GKI script..."
+            echo "→ Building with GKI script..."
             export BUILD_CONFIG=build.config.gki.aarch64
             export OUT_DIR=$PWD/out
             export DIST_DIR=$PWD/dist
@@ -157,25 +156,15 @@ jobs:
             export BUILD_KERNEL=1
             bash build/build.sh 2>&1 | tee build.log
           else
-            echo "→ Using fallback build..."
+            echo "→ Fallback build..."
             make O=out gki_defconfig
             ./scripts/kconfig/merge_config.sh -m out/.config arch/arm64/configs/ksu_susfs.config || true
             make O=out -j$(nproc) 2>&1 | tee build.log
           fi
 
-          # Find Image
-          IMAGE=$(find out/arch/arm64/boot -name "Image*" -o -name "Image.gz*" | head -n1)
-          if [ -z "$IMAGE" ]; then
-            IMAGE=$(find out -name "Image*" | head -n1)
-          fi
-
-          if [ -n "$IMAGE" ] && [ -s "$IMAGE" ]; then
-            echo "IMAGE_PATH=$IMAGE" >> "$GITHUB_ENV"
-            echo "✓ Kernel Image found: $IMAGE"
-          else
-            echo "::warning::Kernel Image not found! Build may have failed."
-            echo "IMAGE_PATH=" >> "$GITHUB_ENV"
-          fi
+          IMAGE=$(find out/arch/arm64/boot -name "Image*" 2>/dev/null | head -n1 || find out -name "Image*" 2>/dev/null | head -n1)
+          echo "IMAGE_PATH=$IMAGE" >> "$GITHUB_ENV"
+          echo "Kernel Image: $IMAGE"
 
       - name: Verify KSU + SUSFS
         run: |
@@ -200,9 +189,7 @@ jobs:
           mkdir -p out_artifacts
           if [ -n "\( {{ env.IMAGE_PATH }}" ] && [ -f " \){{ env.IMAGE_PATH }}" ]; then
             cp "${{ env.IMAGE_PATH }}" out_artifacts/Image
-            echo "✓ Copied kernel image"
           else
-            echo "::warning::No kernel image to copy, creating dummy zip"
             touch out_artifacts/Image
           fi
 
@@ -217,7 +204,6 @@ jobs:
           sed -i "s/^kernel\.string=.*/kernel.string=Spinel GKI KSU+SUSFS [${{ inputs.root_manager }}]/" anykernel.sh
 
           zip -r9 ../out_artifacts/Flashable_AnyKernel3.zip . -x ".git/*"
-          echo "✓ AnyKernel3 zip created"
 
       - name: Download Manager APK
         run: |
@@ -226,9 +212,12 @@ jobs:
             curl -L "https://nightly.link/ReSukiSU/ReSukiSU/workflows/build-manager/main/Manager-release.zip" -o /tmp/manager.zip
             unzip /tmp/manager.zip -d out_artifacts/managers/ || true
           else
-            URL=\( (curl -s "https://api.github.com/repos/ \){{ env.MGR_REPO }}/releases/latest" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -1)
-            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-              curl -L "\( URL" -o "out_artifacts/managers/ \){{ env.MGR_NAME }}.apk" || true
+            MGR_REPO="${{ env.MGR_REPO }}"
+            if [ -n "$MGR_REPO" ]; then
+              URL=$(curl -s "https://api.github.com/repos/$MGR_REPO/releases/latest" | jq -r '.assets[] | select(.name|endswith(".apk")) | .browser_download_url' | head -1)
+              if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+                curl -L "\( URL" -o "out_artifacts/managers/ \){{ env.MGR_NAME }}.apk" || true
+              fi
             fi
           fi
 
@@ -250,7 +239,6 @@ jobs:
           Kernel Ver  : ${{ env.KERNEL_VERSION }}
           KSU         : ${{ env.KSU_IN_KERNEL }}
           SUSFS       : ${{ env.SUSFS_IN_KERNEL }}
-          Status      : Completed with warnings
           EOF
 
       - name: Upload artifacts
