@@ -70,10 +70,15 @@ jobs:
 
           setup_susfs() {
             echo "→ Adding SUSFS patches..."
-            git clone --depth=1 https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu
+            # استخدام رابط بديل أو clone مع fix للمشكلة
+            git clone --depth=1 https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu || \
+            git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu || \
+            echo "::warning::Could not clone SUSFS repo, continuing without extra patches"
+            
             cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
             cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
             cp ../susfs4ksu/kernel_patches/include/linux/sus_su.h include/linux/ 2>/dev/null || true
+            
             for p in ../susfs4ksu/kernel_patches/*.patch; do
               if [ -f "$p" ]; then
                 patch -p1 --forward < "$p" 2>/dev/null && echo "✓ Applied: $(basename $p)" || true
@@ -144,6 +149,7 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
 
           if [ -f build/build.sh ]; then
+            echo "→ Building with GKI build script..."
             export BUILD_CONFIG=build.config.gki.aarch64
             export OUT_DIR=$PWD/out
             export DIST_DIR=$PWD/dist
@@ -151,6 +157,7 @@ jobs:
             export BUILD_KERNEL=1
             bash build/build.sh 2>&1 | tee build.log
           else
+            echo "→ Using fallback build..."
             make O=out gki_defconfig
             ./scripts/kconfig/merge_config.sh -m out/.config arch/arm64/configs/ksu_susfs.config || true
             make O=out -j$(nproc) 2>&1 | tee build.log
@@ -240,9 +247,11 @@ jobs:
             LABEL=$2
             if [ -f "$FILE" ]; then
               SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
-              LINK=$(curl -# -F "file=@\( FILE" "https:// \){SERVER}.gofile.io/uploadFile" | jq -r '.data.downloadPage')
-              echo "GOFILE_${LABEL}=$LINK" >> "$GITHUB_ENV"
-              echo "GoFile $LABEL: $LINK"
+              if [ -n "$SERVER" ]; then
+                LINK=$(curl -# -F "file=@\( FILE" "https:// \){SERVER}.gofile.io/uploadFile" | jq -r '.data.downloadPage')
+                echo "GOFILE_${LABEL}=$LINK" >> "$GITHUB_ENV"
+                echo "GoFile $LABEL: $LINK"
+              fi
             fi
           }
           upload_gofile "out_artifacts/Flashable_AnyKernel3.zip" "ANYKERNEL3"
