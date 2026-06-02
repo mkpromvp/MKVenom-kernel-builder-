@@ -13,8 +13,13 @@ on:
         required: true
         default: "spinel-v-oss"
         type: string
+      defconfig:
+        description: "Defconfig name (leave empty = auto detect)"
+        required: false
+        default: ""
+        type: string
       root_manager:
-        description: "Root manager / KSU variant (all include SUSFS)"
+        description: "Root manager (all include SUSFS)"
         required: true
         default: "KernelSU-Next"
         type: choice
@@ -23,13 +28,8 @@ on:
           - "SukiSU-Ultra"
           - "ReSukiSU"
           - "WildKernels-Patch"
-      defconfig:
-        description: "Defconfig name"
-        required: true
-        default: "spinel_user_defconfig"
-        type: string
       use_lto:
-        description: "Enable LTO (slower build, smaller/faster kernel)"
+        description: "Enable LTO (slower build)"
         required: false
         type: boolean
         default: false
@@ -42,14 +42,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # MTK kernel build محتاج مساحة كبيرة
-    # ubuntu-latest عنده ~14GB free وكافي
     timeout-minutes: 120
 
     steps:
-      # ─────────────────────────────────────────────────────────────────
-      # 1. تحضير البيئة
-      # ─────────────────────────────────────────────────────────────────
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
@@ -67,9 +62,6 @@ jobs:
           sudo apt-get clean
           df -h
 
-      # ─────────────────────────────────────────────────────────────────
-      # 2. Clone kernel source
-      # ─────────────────────────────────────────────────────────────────
       - name: Clone kernel source
         run: |
           set -e
@@ -78,34 +70,75 @@ jobs:
             --branch "${{ inputs.kernel_branch }}" \
             "${{ inputs.kernel_source_url }}" \
             kernel_src
-          cd kernel_src
-          echo "KERNEL_DIR=$PWD" >> "$GITHUB_ENV"
+          echo "KERNEL_DIR=$PWD/kernel_src" >> "$GITHUB_ENV"
 
-          # استخرج kernel version
-          VER=$(make kernelversion 2>/dev/null || head -3 Makefile | tr -d ' ' | paste -sd '.' | grep -oP '\d+\.\d+\.\d+' || true)
+          cd kernel_src
+          VER=$(make kernelversion 2>/dev/null | head -1 || true)
           echo "KERNEL_VERSION=${VER:-unknown}" >> "$GITHUB_ENV"
           echo "Kernel version: $VER"
 
-      # ─────────────────────────────────────────────────────────────────
-      # 3. MTK kernel modules (مطلوبة للـ spinel / mt6789)
-      # ─────────────────────────────────────────────────────────────────
       - name: Clone MTK kernel modules
         run: |
-          set -e
-          # MiCode بتحط الـ modules في repo منفصل MTK_kernel_modules
-          # بنحاول نجيبه بنفس الـ branch أو أقرب branch
           BRANCH="${{ inputs.kernel_branch }}"
           git clone --depth=1 \
             --branch "$BRANCH" \
             "https://github.com/MiCode/MTK_kernel_modules.git" \
-            kernel_src/vendor_modules 2>/dev/null || {
-            echo "::warning::MTK_kernel_modules branch $BRANCH not found, trying without modules"
-          }
-          echo "✓ MTK modules step done"
+            kernel_src/vendor_modules 2>/dev/null \
+          && echo "✓ MTK modules cloned" \
+          || echo "::warning::MTK_kernel_modules branch not found, continuing without"
 
       # ─────────────────────────────────────────────────────────────────
-      # 4. Setup KSU variant + SUSFS
+      # Auto-detect defconfig
+      # بيدور على أي defconfig فيه اسم الجهاز أو mt6789 أو alps
       # ─────────────────────────────────────────────────────────────────
+      - name: Auto-detect defconfig
+        run: |
+          set -e
+          cd "$KERNEL_DIR"
+
+          USER_DEFCFG="${{ inputs.defconfig }}"
+
+          if [ -n "$USER_DEFCFG" ]; then
+            # المستخدم حدد اسم
+            FOUND=$(find arch/arm64/configs arch/arm64/configs/vendor \
+              -name "$USER_DEFCFG" 2>/dev/null | head -1 || true)
+            [ -n "$FOUND" ] || { echo "::error::Defconfig not found: $USER_DEFCFG"; exit 1; }
+            DEFCFG_NAME="$USER_DEFCFG"
+            echo "✓ Using user-specified defconfig: $DEFCFG_NAME"
+          else
+            echo "→ Auto-detecting defconfig..."
+            # طبع كل الـ defconfigs المتاحة للـ debug
+            echo "=== Available defconfigs ==="
+            find arch/arm64/configs -name "*defconfig*" 2>/dev/null | sort || true
+            echo "==========================="
+
+            # نبحث بالترتيب: اسم الجهاز، بعدين mt6789، بعدين alps، بعدين أي user_defconfig
+            CODENAME=$(echo "${{ inputs.kernel_branch }}" | cut -d'-' -f1)
+            echo "Codename hint: $CODENAME"
+
+            DEFCFG_PATH=$(find arch/arm64/configs -name "${CODENAME}*defconfig" 2>/dev/null | head -1 || true)
+
+            if [ -z "$DEFCFG_PATH" ]; then
+              DEFCFG_PATH=$(find arch/arm64/configs -name "*mt6789*defconfig" 2>/dev/null | head -1 || true)
+            fi
+
+            if [ -z "$DEFCFG_PATH" ]; then
+              DEFCFG_PATH=$(find arch/arm64/configs -name "*user_defconfig" 2>/dev/null | head -1 || true)
+            fi
+
+            if [ -z "$DEFCFG_PATH" ]; then
+              DEFCFG_PATH=$(find arch/arm64/configs -name "*defconfig" \
+                ! -name "gki_defconfig" ! -name "defconfig" 2>/dev/null | head -1 || true)
+            fi
+
+            [ -n "$DEFCFG_PATH" ] || { echo "::error::Cannot auto-detect defconfig! Please specify it manually."; exit 1; }
+
+            DEFCFG_NAME=$(basename "$DEFCFG_PATH")
+            echo "✓ Auto-detected defconfig: $DEFCFG_NAME (at $DEFCFG_PATH)"
+          fi
+
+          echo "DEFCFG_NAME=$DEFCFG_NAME" >> "$GITHUB_ENV"
+
       - name: Setup KSU + SUSFS (${{ inputs.root_manager }})
         run: |
           set -e
@@ -114,78 +147,80 @@ jobs:
           case "${{ inputs.root_manager }}" in
 
             KernelSU-Next)
-              echo "→ Adding KernelSU-Next..."
+              echo "→ Adding KernelSU-Next + SUSFS..."
               curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-              # SUSFS for KSU-Next
-              SUSFS_BRANCH="gki-$( strings arch/arm64/boot/.config 2>/dev/null | grep -oP 'android\d+' | head -1 || echo android14 )-5.15"
-              git clone --depth=1 \
-                https://gitlab.com/simonpunk/susfs4ksu.git \
-                -b "${SUSFS_BRANCH}" ../susfs4ksu 2>/dev/null || \
-              git clone --depth=1 \
-                https://gitlab.com/simonpunk/susfs4ksu.git \
-                ../susfs4ksu
-              # Apply SUSFS patches
-              cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/
-              cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/
+
+              git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu || \
+              git clone --depth=1 https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu
+
+              cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
+              cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
               cp ../susfs4ksu/kernel_patches/include/linux/sus_su.h include/linux/ 2>/dev/null || true
-              patch -p1 --forward < ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch 2>/dev/null || \
-              patch -p1 --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch 2>/dev/null || true
-              echo "KSU_MANAGER_REPO=KernelSU-Next/KernelSU-Next" >> "$GITHUB_ENV"
-              echo "KSU_MANAGER_NAME=KernelSU-Next_Manager" >> "$GITHUB_ENV"
+
+              # جرب كل الـ patch files بالترتيب
+              for P in \
+                ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch \
+                ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch \
+                ../susfs4ksu/kernel_patches/60_add_susfs_in_kernel.patch; do
+                [ -f "$P" ] && patch -p1 --forward < "$P" 2>/dev/null && echo "✓ Applied: $(basename $P)" && break || true
+              done
+
+              echo "MGR_REPO=KernelSU-Next/KernelSU-Next" >> "$GITHUB_ENV"
+              echo "MGR_NAME=KernelSU-Next_Manager" >> "$GITHUB_ENV"
               ;;
 
             SukiSU-Ultra)
-              echo "→ Adding SukiSU-Ultra..."
+              echo "→ Adding SukiSU-Ultra (includes SUSFS)..."
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-              echo "KSU_MANAGER_REPO=SukiSU-Ultra/SukiSU-Ultra" >> "$GITHUB_ENV"
-              echo "KSU_MANAGER_NAME=SukiSU_Manager" >> "$GITHUB_ENV"
+              echo "MGR_REPO=SukiSU-Ultra/SukiSU-Ultra" >> "$GITHUB_ENV"
+              echo "MGR_NAME=SukiSU_Manager" >> "$GITHUB_ENV"
               ;;
 
             ReSukiSU)
-              echo "→ Adding ReSukiSU..."
+              echo "→ Adding ReSukiSU + SUSFS..."
               curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
-              # SUSFS - ReSukiSU بيجيب SUSFS تلقائياً عادةً، نتحقق
-              if ! grep -r 'susfs' fs/ include/ --include="*.c" --include="*.h" -l 2>/dev/null | head -1 | grep -q .; then
+
+              if ! find fs/ include/ -name "susfs*" 2>/dev/null | grep -q .; then
                 git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu || true
                 cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
                 cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
-                patch -p1 --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch 2>/dev/null || true
+                for P in \
+                  ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch \
+                  ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch; do
+                  [ -f "$P" ] && patch -p1 --forward < "$P" 2>/dev/null && break || true
+                done
               fi
-              echo "KSU_MANAGER_REPO=ReSukiSU/ReSukiSU" >> "$GITHUB_ENV"
-              echo "KSU_MANAGER_NAME=ReSukiSU_Manager" >> "$GITHUB_ENV"
+              echo "MGR_REPO=ReSukiSU/ReSukiSU" >> "$GITHUB_ENV"
+              echo "MGR_NAME=ReSukiSU_Manager" >> "$GITHUB_ENV"
               ;;
 
             WildKernels-Patch)
-              echo "→ Adding WildKernels (KSU-Next based)..."
+              echo "→ Adding WildKernels (KSU-Next) + SUSFS..."
               curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+
               git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu || true
               cp ../susfs4ksu/kernel_patches/fs/susfs.c fs/ 2>/dev/null || true
               cp ../susfs4ksu/kernel_patches/include/linux/susfs.h include/linux/ 2>/dev/null || true
-              patch -p1 --forward < ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch 2>/dev/null || true
-              echo "KSU_MANAGER_REPO=WildKernels/Wild_KSU" >> "$GITHUB_ENV"
-              echo "KSU_MANAGER_NAME=WildKSU_Manager" >> "$GITHUB_ENV"
+              for P in \
+                ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch \
+                ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch; do
+                [ -f "$P" ] && patch -p1 --forward < "$P" 2>/dev/null && break || true
+              done
+              echo "MGR_REPO=WildKernels/Wild_KSU" >> "$GITHUB_ENV"
+              echo "MGR_NAME=WildKSU_Manager" >> "$GITHUB_ENV"
               ;;
           esac
 
           echo "✓ KSU + SUSFS setup done"
 
-      # ─────────────────────────────────────────────────────────────────
-      # 5. Enable KSU + SUSFS في الـ defconfig
-      # ─────────────────────────────────────────────────────────────────
       - name: Patch defconfig
         run: |
           set -e
           cd "$KERNEL_DIR"
 
-          DEFCFG="arch/arm64/configs/${{ inputs.defconfig }}"
-          [ -f "$DEFCFG" ] || {
-            # بعض الأجهزة بتحط الـ defconfig في vendor/
-            DEFCFG=$(find arch/arm64/configs -name "${{ inputs.defconfig }}" | head -1 || true)
-            [ -n "$DEFCFG" ] || { echo "::error::Defconfig not found: ${{ inputs.defconfig }}"; exit 1; }
-          }
-          echo "DEFCFG_PATH=$DEFCFG" >> "$GITHUB_ENV"
+          DEFCFG=$(find arch/arm64/configs -name "$DEFCFG_NAME" 2>/dev/null | head -1)
+          [ -n "$DEFCFG" ] || { echo "::error::Defconfig $DEFCFG_NAME not found"; exit 1; }
 
-          # KSU configs
           cat >> "$DEFCFG" << 'KCFG'
           # KernelSU
           CONFIG_KSU=y
@@ -202,7 +237,6 @@ jobs:
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
           KCFG
 
-          # LTO
           if [ "${{ inputs.use_lto }}" = "true" ]; then
             echo "CONFIG_LTO_CLANG=y" >> "$DEFCFG"
             echo "CONFIG_LTO_CLANG_FULL=y" >> "$DEFCFG"
@@ -210,34 +244,13 @@ jobs:
             echo "CONFIG_LTO_NONE=y" >> "$DEFCFG"
           fi
 
-          echo "✓ defconfig patched"
-          grep -E 'CONFIG_KSU|CONFIG_KSU_SUSFS' "$DEFCFG" | head -15
+          echo "✓ defconfig patched: $DEFCFG"
 
-      # ─────────────────────────────────────────────────────────────────
-      # 6. Build kernel
-      # MTK spinel = arm64, clang toolchain
-      # ─────────────────────────────────────────────────────────────────
       - name: Build kernel
         run: |
           set -e
           cd "$KERNEL_DIR"
           mkdir -p out
-
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CC=clang
-          export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-
-          # ccache لتسريع اي build تاني
-          export USE_CCACHE=1
-          export CCACHE_DIR=~/.ccache
 
           BUILD_FLAGS="
             ARCH=arm64
@@ -253,91 +266,46 @@ jobs:
             O=out
           "
 
-          echo "→ Loading defconfig..."
-          make $BUILD_FLAGS "${{ inputs.defconfig }}" 2>&1 | tail -5
+          echo "→ Loading defconfig: $DEFCFG_NAME"
+          make $BUILD_FLAGS "$DEFCFG_NAME" 2>&1 | tail -5
 
           echo "→ Building kernel ($(nproc) cores)..."
-          make $BUILD_FLAGS -j$(nproc) 2>&1 | tail -30
+          make $BUILD_FLAGS -j$(nproc) 2>&1 | tail -50
 
-          # تحقق من وجود الـ Image
           IMAGE=$(find out/arch/arm64/boot -name "Image" -o -name "Image.gz" | head -1 || true)
-          [ -n "$IMAGE" ] && [ -s "$IMAGE" ] || { echo "::error::Kernel Image not found after build!"; exit 1; }
+          [ -n "$IMAGE" ] && [ -s "$IMAGE" ] || { echo "::error::Kernel Image not found!"; exit 1; }
           echo "IMAGE_PATH=$IMAGE" >> "$GITHUB_ENV"
-          echo "✓ Kernel built: $IMAGE"
-          ls -lh "$IMAGE"
+          echo "✓ Built: $IMAGE ($(du -sh $IMAGE | cut -f1))"
 
-      # ─────────────────────────────────────────────────────────────────
-      # 7. Verify SUSFS in built kernel
-      # ─────────────────────────────────────────────────────────────────
       - name: Verify SUSFS in kernel
         run: |
-          IMAGE="${{ env.IMAGE_PATH }}"
+          IMAGE="$KERNEL_DIR/${{ env.IMAGE_PATH }}"
+          [ -f "$IMAGE" ] || IMAGE=$(find "$KERNEL_DIR" -path "*/boot/Image" | head -1)
           SUSFS_FOUND="no"
-          if strings "$IMAGE" | grep -Eiq 'susfs|sus_su|ksu_susfs'; then
-            SUSFS_FOUND="yes"
-          fi
           KSU_FOUND="no"
-          if strings "$IMAGE" | grep -Eiq 'kernelsu|KernelSU'; then
-            KSU_FOUND="yes"
-          fi
+          strings "$IMAGE" | grep -Eiq 'susfs|sus_su|ksu_susfs' && SUSFS_FOUND="yes"
+          strings "$IMAGE" | grep -Eiq 'kernelsu|KernelSU'      && KSU_FOUND="yes"
           echo "SUSFS_IN_KERNEL=$SUSFS_FOUND" >> "$GITHUB_ENV"
-          echo "KSU_IN_KERNEL=$KSU_FOUND" >> "$GITHUB_ENV"
-          echo "SUSFS in kernel strings: $SUSFS_FOUND"
-          echo "KSU in kernel strings:   $KSU_FOUND"
+          echo "KSU_IN_KERNEL=$KSU_FOUND"     >> "$GITHUB_ENV"
+          echo "SUSFS: $SUSFS_FOUND | KSU: $KSU_FOUND"
 
-      # ─────────────────────────────────────────────────────────────────
-      # 8. Setup magiskboot للـ boot.img repacking
-      # ─────────────────────────────────────────────────────────────────
       - name: Setup magiskboot
         run: |
-          set -e
           curl -sL "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk" -o magisk.apk
           unzip -jq magisk.apk "lib/x86_64/libmagiskboot.so" -d .
-          mv libmagiskboot.so magiskboot
-          chmod +x magiskboot
-          echo "✓ magiskboot ready"
+          mv libmagiskboot.so magiskboot && chmod +x magiskboot
 
-      # ─────────────────────────────────────────────────────────────────
-      # 9. Patch boot.img (لو المستخدم رفع boot.img)
-      #    لو مفيش boot.img → بنطلع Image فقط + AnyKernel3
-      # ─────────────────────────────────────────────────────────────────
-      - name: Patch boot.img (if provided via artifact)
+      - name: Build AnyKernel3 zip
         run: |
           set -e
           mkdir -p out_artifacts
 
-          # نسخ الـ Image للـ artifacts
-          cp "${{ env.IMAGE_PATH }}" out_artifacts/Image
+          IMAGE=$(find "$KERNEL_DIR/out" -name "Image" -o -name "Image.gz" | head -1)
+          cp "$IMAGE" out_artifacts/Image
 
-          # لو فيه boot.img موجود في الـ workspace (من upload مسبق)
-          if [ -f boot.img ]; then
-            mkdir -p boot_work
-            cp boot.img boot_work/
-            cd boot_work
-            ../magiskboot unpack boot.img
-            # استبدل الـ kernel
-            KFILE=$(find . -maxdepth 1 \( -name kernel -o -name Image \) | head -1)
-            [ -n "$KFILE" ] || KFILE="kernel"
-            cp "../${{ env.IMAGE_PATH }}" "$KFILE"
-            ../magiskboot repack boot.img ../out_artifacts/patched_boot.img
-            cd ..
-            echo "BOOT_PATCHED=yes" >> "$GITHUB_ENV"
-            echo "✓ boot.img patched"
-          else
-            echo "No boot.img provided — skipping boot.img patch"
-            echo "BOOT_PATCHED=no" >> "$GITHUB_ENV"
-          fi
-
-      # ─────────────────────────────────────────────────────────────────
-      # 10. Build AnyKernel3
-      # ─────────────────────────────────────────────────────────────────
-      - name: Build AnyKernel3 zip
-        run: |
-          set -e
           curl -fL "https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip" -o ak3.zip
           unzip -q ak3.zip
           AK3="AnyKernel3-master"
-
           cp out_artifacts/Image "$AK3/Image"
 
           perl -0777 -i -pe '
@@ -348,116 +316,83 @@ jobs:
             s/^kernel\.string=.*/kernel.string=Spinel KSU+SUSFS [${{ inputs.root_manager }}] by CI/m;
           ' "$AK3/anykernel.sh"
 
-          grep -q '^block=' "$AK3/anykernel.sh" || echo 'block=boot' >> "$AK3/anykernel.sh"
-          grep -q '^is_slot_device=' "$AK3/anykernel.sh" || echo 'is_slot_device=auto' >> "$AK3/anykernel.sh"
+          grep -q '^block='         "$AK3/anykernel.sh" || echo 'block=boot'         >> "$AK3/anykernel.sh"
+          grep -q '^is_slot_device' "$AK3/anykernel.sh" || echo 'is_slot_device=auto' >> "$AK3/anykernel.sh"
 
           (cd "$AK3" && zip -r9 ../out_artifacts/Flashable_AnyKernel3.zip . -x ".git/*")
-          echo "✓ AnyKernel3 zip ready"
-          ls -lh out_artifacts/
+          echo "✓ AnyKernel3 ready: $(du -sh out_artifacts/Flashable_AnyKernel3.zip | cut -f1)"
 
-      # ─────────────────────────────────────────────────────────────────
-      # 11. Download KSU Manager APK
-      # ─────────────────────────────────────────────────────────────────
       - name: Download KSU Manager APK
         run: |
           set -e
           mkdir -p out_artifacts/managers
 
-          REPO="${KSU_MANAGER_REPO}"
-          NAME="${KSU_MANAGER_NAME}"
-
           if [ "${{ inputs.root_manager }}" = "ReSukiSU" ]; then
-            # ReSukiSU → nightly.link (مفيش releases)
-            echo "Downloading ReSukiSU Normal Manager..."
-            HTTP=$(curl -sL --write-out "%{http_code}" \
-              "https://nightly.link/ReSukiSU/ReSukiSU/workflows/build-manager/main/Manager-release.zip" \
-              -o /tmp/mgr_normal.zip)
-            if [ "$HTTP" = "200" ] && [ -s /tmp/mgr_normal.zip ]; then
-              unzip -q /tmp/mgr_normal.zip -d /tmp/mgr_normal/
-              APK=$(find /tmp/mgr_normal/ -name "*.apk" | head -1 || true)
-              [ -n "$APK" ] && cp "$APK" out_artifacts/managers/ReSukiSU_Manager_Normal.apk
-            fi
-
-            echo "Downloading ReSukiSU Spoofed Manager..."
-            HTTP=$(curl -sL --write-out "%{http_code}" \
-              "https://nightly.link/ReSukiSU/ReSukiSU/workflows/build-manager/main/Manager-spoofed.zip" \
-              -o /tmp/mgr_spoofed.zip)
-            if [ "$HTTP" = "200" ] && [ -s /tmp/mgr_spoofed.zip ]; then
-              unzip -q /tmp/mgr_spoofed.zip -d /tmp/mgr_spoofed/
-              APK=$(find /tmp/mgr_spoofed/ -name "*.apk" | head -1 || true)
-              [ -n "$APK" ] && cp "$APK" out_artifacts/managers/ReSukiSU_Manager_Spoofed.apk
-            fi
-
+            for ARTIFACT in Manager-release Manager-spoofed; do
+              LABEL=$(echo "$ARTIFACT" | sed 's/Manager-//')
+              HTTP=$(curl -sL --write-out "%{http_code}" \
+                "https://nightly.link/ReSukiSU/ReSukiSU/workflows/build-manager/main/${ARTIFACT}.zip" \
+                -o /tmp/${ARTIFACT}.zip)
+              if [ "$HTTP" = "200" ] && [ -s /tmp/${ARTIFACT}.zip ]; then
+                unzip -q /tmp/${ARTIFACT}.zip -d /tmp/${ARTIFACT}/
+                APK=$(find /tmp/${ARTIFACT}/ -name "*.apk" | head -1 || true)
+                [ -n "$APK" ] && cp "$APK" "out_artifacts/managers/ReSukiSU_${LABEL}.apk" \
+                  && echo "✓ ReSukiSU ${LABEL} APK downloaded"
+              else
+                echo "::warning::ReSukiSU ${ARTIFACT} download failed (HTTP $HTTP)"
+              fi
+            done
           else
-            # باقي الـ managers عندهم releases عادية
-            URL=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
+            URL=$(curl -s "https://api.github.com/repos/${{ env.MGR_REPO }}/releases/latest" \
               | jq -r '.assets[] | select(.name|endswith(".apk")) | .browser_download_url' | head -1 || true)
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-              curl -sL "$URL" -o "out_artifacts/managers/${NAME}.apk"
-              echo "✓ Manager APK downloaded"
+              curl -sL "$URL" -o "out_artifacts/managers/${{ env.MGR_NAME }}.apk"
+              echo "✓ Manager APK: ${{ env.MGR_NAME }}"
             else
-              echo "::warning::Manager APK not found for $REPO"
+              echo "::warning::Manager APK not found"
             fi
           fi
 
-          ls -lh out_artifacts/managers/ || true
-
-      # ─────────────────────────────────────────────────────────────────
-      # 12. Download SUSFS userspace module
-      # ─────────────────────────────────────────────────────────────────
-      - name: Download SUSFS userspace module
+      - name: Download SUSFS module
         run: |
-          set -e
           mkdir -p out_artifacts/modules
           URL=$(curl -s https://api.github.com/repos/sidex15/ksu_module_susfs/releases/latest \
             | jq -r '.assets[] | select(.name|endswith(".zip")) | .browser_download_url' | head -1 || true)
           [ -z "$URL" ] || [ "$URL" = "null" ] && \
             URL="https://github.com/sidex15/ksu_module_susfs/releases/download/v1.5.1/ksu_module_susfs_v1.5.1.zip"
           curl -sL "$URL" -o out_artifacts/modules/ksu_module_susfs.zip
-          echo "✓ SUSFS module downloaded"
+          echo "✓ SUSFS module ready"
 
-      # ─────────────────────────────────────────────────────────────────
-      # 13. Build report
-      # ─────────────────────────────────────────────────────────────────
       - name: Generate build report
         run: |
           {
             echo "Spinel Kernel Build Report"
             echo "=========================="
-            echo "Date: $(date -u)"
-            echo "Source: ${{ inputs.kernel_source_url }}"
-            echo "Branch: ${{ inputs.kernel_branch }}"
-            echo "Defconfig: ${{ inputs.defconfig }}"
-            echo "Root Manager: ${{ inputs.root_manager }}"
-            echo "Kernel Version: ${{ env.KERNEL_VERSION }}"
-            echo "KSU in kernel: ${{ env.KSU_IN_KERNEL }}"
-            echo "SUSFS in kernel: ${{ env.SUSFS_IN_KERNEL }}"
-            echo "Boot patched: ${{ env.BOOT_PATCHED }}"
-          } > out_artifacts/build_report.txt
-          cat out_artifacts/build_report.txt
+            echo "Date       : $(date -u)"
+            echo "Source     : ${{ inputs.kernel_source_url }}"
+            echo "Branch     : ${{ inputs.kernel_branch }}"
+            echo "Defconfig  : ${{ env.DEFCFG_NAME }}"
+            echo "Manager    : ${{ inputs.root_manager }}"
+            echo "KernelVer  : ${{ env.KERNEL_VERSION }}"
+            echo "KSU found  : ${{ env.KSU_IN_KERNEL }}"
+            echo "SUSFS found: ${{ env.SUSFS_IN_KERNEL }}"
+          } | tee out_artifacts/build_report.txt
 
-      # ─────────────────────────────────────────────────────────────────
-      # 14. Upload artifact
-      # ─────────────────────────────────────────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: "Spinel-Kernel [${{ inputs.root_manager }}] [${{ env.KERNEL_VERSION }}]"
+          name: "Spinel [${{ inputs.root_manager }}] [${{ env.KERNEL_VERSION }}]"
           path: out_artifacts/
           retention-days: 7
           if-no-files-found: warn
 
-      # ─────────────────────────────────────────────────────────────────
-      # 15. Upload to GoFile
-      # ─────────────────────────────────────────────────────────────────
       - name: Upload to GoFile
         if: ${{ inputs.upload_gofile }}
         run: |
           set +e
           upload_gofile() {
-            local FILE="$1"
-            local LABEL="$2"
-            [ -f "$FILE" ] || { echo "Skip: $FILE"; return; }
+            local FILE="$1" LABEL="$2"
+            [ -f "$FILE" ] || return
             SERVER=$(curl -sf https://api.gofile.io/servers | jq -r '.data.servers[0].name')
             [ -n "$SERVER" ] && [ "$SERVER" != "null" ] || return
             LINK=$(curl -# -F "file=@${FILE}" "https://${SERVER}.gofile.io/uploadFile" \
@@ -466,14 +401,9 @@ jobs:
               echo "GOFILE_${LABEL}=${LINK}" >> "$GITHUB_ENV" && \
               echo "GoFile ${LABEL}: ${LINK}"
           }
-
           upload_gofile "out_artifacts/Flashable_AnyKernel3.zip" "ANYKERNEL3"
-          upload_gofile "out_artifacts/patched_boot.img"          "BOOT"
           upload_gofile "out_artifacts/Image"                     "IMAGE"
 
-      # ─────────────────────────────────────────────────────────────────
-      # 16. Summary
-      # ─────────────────────────────────────────────────────────────────
       - name: Summary
         if: always()
         run: |
@@ -483,13 +413,11 @@ jobs:
             echo "| Property | Value |"
             echo "|---|---|"
             echo "| Branch | \`${{ inputs.kernel_branch }}\` |"
-            echo "| Defconfig | \`${{ inputs.defconfig }}\` |"
+            echo "| Defconfig | \`${{ env.DEFCFG_NAME }}\` |"
             echo "| Root Manager | \`${{ inputs.root_manager }}\` |"
             echo "| Kernel Version | \`${{ env.KERNEL_VERSION }}\` |"
             echo "| KSU in kernel | \`${{ env.KSU_IN_KERNEL }}\` |"
             echo "| SUSFS in kernel | \`${{ env.SUSFS_IN_KERNEL }}\` |"
-            echo "| Boot.img patched | \`${{ env.BOOT_PATCHED }}\` |"
             echo "| GoFile AnyKernel3 | ${{ env.GOFILE_ANYKERNEL3 }} |"
-            echo "| GoFile Boot.img | ${{ env.GOFILE_BOOT }} |"
             echo "| GoFile Image | ${{ env.GOFILE_IMAGE }} |"
           } >> "$GITHUB_STEP_SUMMARY"
