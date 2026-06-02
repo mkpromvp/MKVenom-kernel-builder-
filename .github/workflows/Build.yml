@@ -55,10 +55,7 @@ jobs:
       - name: Clone kernel source
         run: |
           echo "Cloning ${{ inputs.kernel_source_url }} branch: ${{ inputs.kernel_branch }}"
-          git clone --depth=1 \
-            --branch "${{ inputs.kernel_branch }}" \
-            "${{ inputs.kernel_source_url }}" \
-            kernel_src
+          git clone --depth=1 --branch "\( {{ inputs.kernel_branch }}" " \){{ inputs.kernel_source_url }}" kernel_src
           echo "KERNEL_DIR=$PWD/kernel_src" >> "$GITHUB_ENV"
           cd kernel_src
           VER=$(make kernelversion 2>/dev/null || echo "unknown")
@@ -85,27 +82,23 @@ jobs:
 
           case "${{ inputs.root_manager }}" in
             "KernelSU-Next")
-              echo "→ KernelSU-Next..."
               curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
               setup_susfs
               echo "MGR_REPO=KernelSU-Next/KernelSU-Next" >> "$GITHUB_ENV"
               echo "MGR_NAME=KernelSU-Next_Manager" >> "$GITHUB_ENV"
               ;;
             "SukiSU-Ultra")
-              echo "→ SukiSU-Ultra..."
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
               echo "MGR_REPO=SukiSU-Ultra/SukiSU-Ultra" >> "$GITHUB_ENV"
               echo "MGR_NAME=SukiSU_Manager" >> "$GITHUB_ENV"
               ;;
             "ReSukiSU")
-              echo "→ ReSukiSU..."
               curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
               setup_susfs
               echo "MGR_REPO=ReSukiSU/ReSukiSU" >> "$GITHUB_ENV"
               echo "MGR_NAME=ReSukiSU_Manager" >> "$GITHUB_ENV"
               ;;
             "WildKernels-Patch")
-              echo "→ WildKernels..."
               curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
               setup_susfs
               echo "MGR_REPO=WildKernels/Wild_KSU" >> "$GITHUB_ENV"
@@ -145,7 +138,7 @@ jobs:
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
 
-          echo "→ Cleaning source..."
+          echo "→ Running mrproper..."
           make mrproper 2>/dev/null || true
           rm -rf out 2>/dev/null || true
           mkdir -p out
@@ -215,9 +208,11 @@ jobs:
             curl -L "https://nightly.link/ReSukiSU/ReSukiSU/workflows/build-manager/main/Manager-release.zip" -o /tmp/manager.zip
             unzip /tmp/manager.zip -d out_artifacts/managers/ || true
           else
-            URL=\( (curl -s "https://api.github.com/repos/ \){{ env.MGR_REPO }}/releases/latest" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -1)
-            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-              curl -L "\( URL" -o "out_artifacts/managers/ \){{ env.MGR_NAME }}.apk" || true
+            if [ -n "${{ env.MGR_REPO }}" ]; then
+              URL=\( (curl -s "https://api.github.com/repos/ \){{ env.MGR_REPO }}/releases/latest" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -1)
+              if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+                curl -L "\( URL" -o "out_artifacts/managers/ \){{ env.MGR_NAME }}.apk" || true
+              fi
             fi
           fi
 
