@@ -54,8 +54,11 @@ jobs:
 
       - name: Clone kernel source
         run: |
-          echo "Cloning ${{ inputs.kernel_source_url }} - Branch: ${{ inputs.kernel_branch }}"
-          git clone --depth=1 --branch "\( {{ inputs.kernel_branch }}" " \){{ inputs.kernel_source_url }}" kernel_src
+          echo "Cloning ${{ inputs.kernel_source_url }} branch: ${{ inputs.kernel_branch }}"
+          git clone --depth=1 \
+            --branch "${{ inputs.kernel_branch }}" \
+            "${{ inputs.kernel_source_url }}" \
+            kernel_src
           echo "KERNEL_DIR=$PWD/kernel_src" >> "$GITHUB_ENV"
           cd kernel_src
           VER=$(make kernelversion 2>/dev/null || echo "unknown")
@@ -148,7 +151,7 @@ jobs:
           mkdir -p out
 
           if [ -f build/build.sh ]; then
-            echo "→ Building with GKI script..."
+            echo "→ Building with official GKI script..."
             export BUILD_CONFIG=build.config.gki.aarch64
             export OUT_DIR=$PWD/out
             export DIST_DIR=$PWD/dist
@@ -212,12 +215,9 @@ jobs:
             curl -L "https://nightly.link/ReSukiSU/ReSukiSU/workflows/build-manager/main/Manager-release.zip" -o /tmp/manager.zip
             unzip /tmp/manager.zip -d out_artifacts/managers/ || true
           else
-            MGR_REPO="${{ env.MGR_REPO }}"
-            if [ -n "$MGR_REPO" ]; then
-              URL=$(curl -s "https://api.github.com/repos/$MGR_REPO/releases/latest" | jq -r '.assets[] | select(.name|endswith(".apk")) | .browser_download_url' | head -1)
-              if [ -n "$URL" ] && [ "$URL" != "null" ]; then
-                curl -L "\( URL" -o "out_artifacts/managers/ \){{ env.MGR_NAME }}.apk" || true
-              fi
+            URL=\( (curl -s "https://api.github.com/repos/ \){{ env.MGR_REPO }}/releases/latest" | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -1)
+            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+              curl -L "\( URL" -o "out_artifacts/managers/ \){{ env.MGR_NAME }}.apk" || true
             fi
           fi
 
@@ -237,8 +237,6 @@ jobs:
           Branch      : ${{ inputs.kernel_branch }}
           Manager     : ${{ inputs.root_manager }}
           Kernel Ver  : ${{ env.KERNEL_VERSION }}
-          KSU         : ${{ env.KSU_IN_KERNEL }}
-          SUSFS       : ${{ env.SUSFS_IN_KERNEL }}
           EOF
 
       - name: Upload artifacts
