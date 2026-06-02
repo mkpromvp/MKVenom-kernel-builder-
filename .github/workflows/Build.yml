@@ -44,6 +44,7 @@ jobs:
             zip unzip cpio pahole pkg-config rsync \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             clang llvm lld llvm-dev libclang-dev
+          echo "✓ Dependencies installed"
 
       - name: Free disk space
         run: |
@@ -53,12 +54,15 @@ jobs:
 
       - name: Clone kernel source
         run: |
-          git clone --depth=1 --branch "\( {{ inputs.kernel_branch }}" " \){{ inputs.kernel_source_url }}" kernel_src
+          git clone --depth=1 \
+            --branch "${{ inputs.kernel_branch }}" \
+            "${{ inputs.kernel_source_url }}" \
+            kernel_src
           echo "KERNEL_DIR=$PWD/kernel_src" >> "$GITHUB_ENV"
           cd kernel_src
           VER=$(make kernelversion 2>/dev/null || echo "unknown")
           echo "KERNEL_VERSION=${VER}" >> "$GITHUB_ENV"
-          echo "Kernel Version: $VER"
+          echo "Kernel version: $VER"
 
       - name: Setup KSU + SUSFS (${{ inputs.root_manager }})
         run: |
@@ -79,27 +83,27 @@ jobs:
 
           case "${{ inputs.root_manager }}" in
             "KernelSU-Next")
-              echo "→ Installing KernelSU-Next..."
+              echo "→ KernelSU-Next..."
               curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
               setup_susfs
               echo "MGR_REPO=KernelSU-Next/KernelSU-Next" >> "$GITHUB_ENV"
               echo "MGR_NAME=KernelSU-Next_Manager" >> "$GITHUB_ENV"
               ;;
             "SukiSU-Ultra")
-              echo "→ Installing SukiSU-Ultra..."
+              echo "→ SukiSU-Ultra..."
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
               echo "MGR_REPO=SukiSU-Ultra/SukiSU-Ultra" >> "$GITHUB_ENV"
               echo "MGR_NAME=SukiSU_Manager" >> "$GITHUB_ENV"
               ;;
             "ReSukiSU")
-              echo "→ Installing ReSukiSU..."
+              echo "→ ReSukiSU..."
               curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
               setup_susfs
               echo "MGR_REPO=ReSukiSU/ReSukiSU" >> "$GITHUB_ENV"
               echo "MGR_NAME=ReSukiSU_Manager" >> "$GITHUB_ENV"
               ;;
             "WildKernels-Patch")
-              echo "→ Installing WildKernels..."
+              echo "→ WildKernels..."
               curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
               setup_susfs
               echo "MGR_REPO=WildKernels/Wild_KSU" >> "$GITHUB_ENV"
@@ -110,7 +114,7 @@ jobs:
       - name: Add KSU + SUSFS config
         run: |
           cd "$KERNEL_DIR"
-          cat > arch/arm64/configs/ksu_susfs.config << 'EOF'
+          cat > arch/arm64/configs/ksu_susfs.config << 'KCFG'
           CONFIG_KSU=y
           CONFIG_KSU_DEBUG=n
           CONFIG_KSU_SUSFS=y
@@ -122,11 +126,10 @@ jobs:
           CONFIG_KSU_SUSFS_TRY_UMOUNT=y
           CONFIG_KSU_SUSFS_SPOOFER=y
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
-          EOF
+          KCFG
 
           if [ -f build.config.gki.aarch64 ]; then
             echo 'POST_DEFCONFIG_CMDS="${POST_DEFCONFIG_CMDS} merge_config.sh -m .config arch/arm64/configs/ksu_susfs.config"' >> build.config.gki.aarch64
-            echo "✓ KSU+SUSFS config added"
           fi
 
       - name: Build GKI Kernel
@@ -141,7 +144,6 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
 
           if [ -f build/build.sh ]; then
-            echo "→ Building with GKI build script..."
             export BUILD_CONFIG=build.config.gki.aarch64
             export OUT_DIR=$PWD/out
             export DIST_DIR=$PWD/dist
@@ -149,15 +151,13 @@ jobs:
             export BUILD_KERNEL=1
             bash build/build.sh 2>&1 | tee build.log
           else
-            echo "→ Using fallback build..."
             make O=out gki_defconfig
             ./scripts/kconfig/merge_config.sh -m out/.config arch/arm64/configs/ksu_susfs.config || true
             make O=out -j$(nproc) 2>&1 | tee build.log
           fi
 
-          IMAGE=$(find out/arch/arm64/boot -name "Image" -o -name "Image.gz" | head -n1 || find out -name "Image" | head -n1)
+          IMAGE=$(find out/arch/arm64/boot -name "Image*" | head -n1 || find out -name "Image*" | head -n1)
           echo "IMAGE_PATH=$IMAGE" >> "$GITHUB_ENV"
-          echo "✓ Kernel Image found: $IMAGE"
 
       - name: Verify KSU + SUSFS
         run: |
@@ -168,7 +168,6 @@ jobs:
           if strings "$IMAGE" | grep -Eiq 'susfs|sus_su'; then SUSFS="yes"; fi
           echo "KSU_IN_KERNEL=$KSU" >> "$GITHUB_ENV"
           echo "SUSFS_IN_KERNEL=$SUSFS" >> "$GITHUB_ENV"
-          echo "KSU: $KSU | SUSFS: $SUSFS"
 
       - name: Setup magiskboot
         run: |
@@ -211,9 +210,39 @@ jobs:
           mkdir -p out_artifacts/modules
           curl -L "https://github.com/sidex15/ksu_module_susfs/releases/latest/download/ksu_module_susfs.zip" -o out_artifacts/modules/ksu_module_susfs.zip || true
 
+      - name: Generate build report
+        run: |
+          mkdir -p out_artifacts
+          cat > out_artifacts/build_report.txt << EOF
+          Spinel Kernel Build Report
+          ==========================
+          Date        : $(date -u)
+          Source      : ${{ inputs.kernel_source_url }}
+          Branch      : ${{ inputs.kernel_branch }}
+          Manager     : ${{ inputs.root_manager }}
+          Kernel Ver  : ${{ env.KERNEL_VERSION }}
+          KSU         : ${{ env.KSU_IN_KERNEL }}
+          SUSFS       : ${{ env.SUSFS_IN_KERNEL }}
+          EOF
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Spinel-GKI-\( {{ inputs.root_manager }}- \){{ env.KERNEL_VERSION }}
           path: out_artifacts/
           retention-days: 7
+
+      - name: Upload to GoFile
+        if: ${{ inputs.upload_gofile }}
+        run: |
+          upload_gofile() {
+            FILE=$1
+            LABEL=$2
+            if [ -f "$FILE" ]; then
+              SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
+              LINK=$(curl -# -F "file=@\( FILE" "https:// \){SERVER}.gofile.io/uploadFile" | jq -r '.data.downloadPage')
+              echo "GOFILE_${LABEL}=$LINK" >> "$GITHUB_ENV"
+              echo "GoFile $LABEL: $LINK"
+            fi
+          }
+          upload_gofile "out_artifacts/Flashable_AnyKernel3.zip" "ANYKERNEL3"
