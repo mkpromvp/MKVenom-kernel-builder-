@@ -139,20 +139,22 @@ jobs:
 
       - name: Build GKI Kernel
         run: |
-          set -e
+          set -eo pipefail
           cd "$KERNEL_DIR"
           mkdir -p out dist
 
           export ARCH=arm64
           export CC=clang
           export LD=ld.lld
+          export LLVM=1
+          export LLVM_IAS=1
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
 
           echo "Cleaning source tree..."
           make mrproper || true
-          rm -rf out
-          mkdir -p out
+          rm -rf out dist
+          mkdir -p out dist
 
           if [ -f build/build.sh ]; then
             echo "Building with official GKI build script..."
@@ -164,17 +166,24 @@ jobs:
             bash build/build.sh 2>&1 | tee build.log
           else
             echo "Using fallback build..."
-            make O=out gki_defconfig
+            make O=out ARCH=arm64 gki_defconfig
             ./scripts/kconfig/merge_config.sh -m out/.config arch/arm64/configs/ksu_susfs.config || true
-            make O=out -j$(nproc) 2>&1 | tee build.log
+            make O=out ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) 2>&1 | tee build.log
           fi
 
-          IMAGE=$(find out/arch/arm64/boot -name 'Image*' 2>/dev/null | head -n1 || true)
+          echo "Searching for compiled kernel image..."
+          IMAGE=$(find out dist -type f -name "Image" 2>/dev/null | head -n1 || true)
           if [ -z "$IMAGE" ]; then
-            IMAGE=$(find out -name 'Image*' 2>/dev/null | head -n1 || true)
+            IMAGE=$(find out dist -type f -name "Image.gz" -o -name "Image.lz4" -o -name "Image.mac" 2>/dev/null | head -n1 || true)
           fi
+          
+          if [ -z "$IMAGE" ] || [ ! -f "$IMAGE" ]; then
+            echo "❌ Error: Kernel Image not found! The build probably failed. Check build.log above."
+            exit 1
+          fi
+
           echo "IMAGE_PATH=$IMAGE" >> "$GITHUB_ENV"
-          echo "Kernel Image: $IMAGE"
+          echo "✅ Kernel Image found at: $IMAGE"
 
       - name: Verify KSU + SUSFS
         run: |
@@ -203,8 +212,10 @@ jobs:
           mkdir -p out_artifacts
           if [ -n "${{ env.IMAGE_PATH }}" ] && [ -f "${{ env.IMAGE_PATH }}" ]; then
             cp "${{ env.IMAGE_PATH }}" out_artifacts/Image
+            echo "Copied Image to out_artifacts successfully."
           else
-            touch out_artifacts/Image
+            echo "❌ Cannot build AnyKernel3, kernel image is missing!"
+            exit 1
           fi
 
           curl -fsSL "https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip" -o ak3.zip
@@ -279,4 +290,4 @@ jobs:
               fi
             fi
           }
-          upload_gofile "out_artifacts/Flashable_AnyKernel3.zip" "ANYKERNEL3"
+          upload_gofile "out_artifacts/Flashable_AnyKernel3.zip" "ANYKERNEL3" 
