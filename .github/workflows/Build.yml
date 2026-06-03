@@ -54,7 +54,7 @@ jobs:
 
       - name: Clone kernel source
         run: |
-          echo "Cloning ${{ inputs.kernel_source_url }} branch: ${{ inputs.kernel_branch }}"
+          echo "Cloning branch: ${{ inputs.kernel_branch }}"
           git clone --depth=1 --branch "\( {{ inputs.kernel_branch }}" " \){{ inputs.kernel_source_url }}" kernel_src
           echo "KERNEL_DIR=$PWD/kernel_src" >> "$GITHUB_ENV"
           cd kernel_src
@@ -144,7 +144,7 @@ jobs:
           mkdir -p out
 
           if [ -f build/build.sh ]; then
-            echo "→ Building with official GKI script..."
+            echo "→ Building with GKI script..."
             export BUILD_CONFIG=build.config.gki.aarch64
             export OUT_DIR=$PWD/out
             export DIST_DIR=$PWD/dist
