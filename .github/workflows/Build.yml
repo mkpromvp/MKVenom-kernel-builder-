@@ -152,7 +152,8 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
 
           echo "Cleaning source tree..."
-          make mrproper || true
+          make ARCH=arm64 mrproper || true
+          rm -f .config
           rm -rf out dist
           mkdir -p out dist
 
@@ -167,7 +168,12 @@ jobs:
           else
             echo "Using fallback build..."
             make O=out ARCH=arm64 gki_defconfig
-            ./scripts/kconfig/merge_config.sh -m out/.config arch/arm64/configs/ksu_susfs.config || true
+            
+            echo "Applying KSU + SUSFS configs..."
+            cat arch/arm64/configs/ksu_susfs.config >> out/.config
+            make O=out ARCH=arm64 CC=clang LLVM=1 olddefconfig
+            
+            echo "Starting kernel compilation..."
             make O=out ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) 2>&1 | tee build.log
           fi
 
