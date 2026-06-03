@@ -70,7 +70,6 @@ jobs:
           find arch/arm64/configs -name "*defconfig" | sort
           echo "==========================="
 
-          # بنختار defconfig بعيد عن fpga/kasan/debug
           DEFCFG=$(find arch/arm64/configs -name "*defconfig" \
             | grep -ivE 'fpga|kasan|khwasan|rockpi|db845c|hikey|gki_defconfig' \
             | grep -iE 'mgk_64_k510|mgk_64|k6789|mt6789|spinel|user' \
@@ -79,12 +78,6 @@ jobs:
           if [ -z "$DEFCFG" ]; then
             DEFCFG=$(find arch/arm64/configs -name "mgk_64*defconfig" \
               | grep -ivE 'fpga|kasan|khwasan' | head -1 || true)
-          fi
-
-          if [ -z "$DEFCFG" ]; then
-            DEFCFG=$(find arch/arm64/configs -name "*defconfig" \
-              | grep -ivE 'fpga|kasan|khwasan|rockpi|db845c|hikey' \
-              | head -1 || true)
           fi
 
           [ -n "$DEFCFG" ] || { echo "::error::No suitable defconfig found!"; exit 1; }
@@ -102,6 +95,11 @@ jobs:
           && echo "✓ MTK modules cloned" \
           || echo "::warning::MTK modules not found, continuing"
 
+      # ─────────────────────────────────────────────────────────────────
+      # KSU + SUSFS
+      # إصلاح: KernelSU-Next setup.sh بدون argument عشان يتجنب
+      # مشكلة "pathspec 'next' did not match"
+      # ─────────────────────────────────────────────────────────────────
       - name: Setup KSU + SUSFS (${{ inputs.root_manager }})
         run: |
           set -e
@@ -120,54 +118,63 @@ jobs:
             cp ../susfs4ksu/kernel_patches/include/linux/sus_su.h \
                include/linux/ 2>/dev/null || true
 
+            # جرب كل الـ patch files
+            PATCHED=0
             for P in \
               "../susfs4ksu/kernel_patches/add_susfs_in_kernel-"*.patch \
               "../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch" \
               "../susfs4ksu/kernel_patches/60_add_susfs_in_kernel.patch"; do
-              [ -f "$P" ] && \
-                patch -p1 --forward < "$P" 2>/dev/null && \
-                echo "✓ Applied SUSFS: $(basename $P)" && break || true
+              [ -f "$P" ] || continue
+              if patch -p1 --forward --dry-run < "$P" 2>/dev/null; then
+                patch -p1 --forward < "$P"
+                echo "✓ Applied SUSFS: $(basename $P)"
+                PATCHED=1
+                break
+              fi
             done
+            [ $PATCHED -eq 1 ] || echo "::warning::No SUSFS patch applied cleanly"
           }
 
           case "${{ inputs.root_manager }}" in
             KernelSU-Next)
-              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
-                | bash -s next || \
-              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
+              echo "→ Setting up KernelSU-Next..."
+              # بدون argument — بيستخدم الـ default branch (next)
+              curl -LSs \
+                "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
                 | bash
               setup_susfs
               echo "MGR_REPO=KernelSU-Next/KernelSU-Next" >> "$GITHUB_ENV"
               echo "MGR_NAME=KernelSU-Next_Manager"        >> "$GITHUB_ENV"
               ;;
             SukiSU-Ultra)
-              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+              echo "→ Setting up SukiSU-Ultra..."
+              curl -LSs \
+                "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
                 | bash -s susfs-main
               echo "MGR_REPO=SukiSU-Ultra/SukiSU-Ultra" >> "$GITHUB_ENV"
               echo "MGR_NAME=SukiSU_Manager"             >> "$GITHUB_ENV"
               ;;
             ReSukiSU)
-              curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" \
+              echo "→ Setting up ReSukiSU..."
+              curl -LSs \
+                "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" \
                 | bash
               find fs/ include/ -name "susfs*" 2>/dev/null | grep -q . || setup_susfs
               echo "MGR_REPO=ReSukiSU/ReSukiSU" >> "$GITHUB_ENV"
               echo "MGR_NAME=ReSukiSU_Manager"   >> "$GITHUB_ENV"
               ;;
             WildKernels-Patch)
-              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
-                | bash -s next || \
-              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
+              echo "→ Setting up WildKernels (KSU-Next base)..."
+              curl -LSs \
+                "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
                 | bash
               setup_susfs
               echo "MGR_REPO=WildKernels/Wild_KSU" >> "$GITHUB_ENV"
               echo "MGR_NAME=WildKSU_Manager"       >> "$GITHUB_ENV"
               ;;
           esac
-          echo "✓ KSU + SUSFS done"
+          echo "✓ KSU + SUSFS setup done"
 
-      # ─────────────────────────────────────────────────────────────────
-      # Build — بنحفظ full log في ملف ونطلعه كـ artifact
-      # ─────────────────────────────────────────────────────────────────
       - name: Build kernel
         run: |
           set -e
@@ -191,7 +198,6 @@ jobs:
           make $MAKE_FLAGS mrproper 2>/dev/null || true
           mkdir -p out
 
-          # KSU + SUSFS config fragment
           cat > /tmp/ksu_susfs.config << 'KCFG'
           CONFIG_KSU=y
           CONFIG_KSU_DEBUG=n
@@ -211,29 +217,26 @@ jobs:
 
           echo "→ Merging KSU+SUSFS fragment..."
           ./scripts/kconfig/merge_config.sh \
-            -m -O out \
-            out/.config \
-            /tmp/ksu_susfs.config 2>&1 | tail -5
+            -m -O out out/.config /tmp/ksu_susfs.config 2>&1 | tail -5
           make $MAKE_FLAGS olddefconfig 2>&1 | tail -3
 
           echo "→ Building kernel ($(nproc) cores)..."
-          # بنحفظ كل الـ output في build.log وبرضو بنعرضه
           set +e
           make $MAKE_FLAGS -j$(nproc) 2>&1 | tee ../build.log
           BUILD_EXIT=${PIPESTATUS[0]}
           set -e
 
-          # لو فشل نطبع آخر 100 سطر من الـ errors
           if [ $BUILD_EXIT -ne 0 ]; then
-            echo "::error::Build failed! Last errors:"
-            grep -iE 'error:|undefined|fatal' ../build.log | tail -30 || true
-            echo "--- Last 50 lines of build.log ---"
-            tail -50 ../build.log
+            echo ""
+            echo "========== BUILD ERRORS =========="
+            grep -nE '^.*error:' ../build.log | grep -v '^\s*//' | tail -40 || true
+            echo "========== LAST 80 LINES ========="
+            tail -80 ../build.log
+            echo "=================================="
             exit $BUILD_EXIT
           fi
 
-          # ابحث عن الـ Image
-          IMAGE=$(find out/arch/arm64/boot -name "Image" -o -name "Image.gz" \
+          IMAGE=$(find out/arch/arm64/boot \( -name "Image" -o -name "Image.gz" \) \
             2>/dev/null | grep -v "\.ko" | head -1 || true)
           [ -n "$IMAGE" ] && [ -s "$IMAGE" ] || \
             { echo "::error::Kernel Image not found!"; exit 1; }
@@ -241,11 +244,12 @@ jobs:
           echo "IMAGE_PATH=$IMAGE" >> "$GITHUB_ENV"
           echo "✓ Kernel: $IMAGE ($(du -sh $IMAGE | cut -f1))"
 
-      - name: Upload build log (always)
+      # build.log دايماً يتحمل حتى لو فشل
+      - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: "build-log"
+          name: "build-log-${{ github.run_number }}"
           path: build.log
           retention-days: 3
           if-no-files-found: ignore
