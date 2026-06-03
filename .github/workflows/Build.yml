@@ -66,24 +66,21 @@ jobs:
           echo "KERNEL_VERSION=${VER}" >> "$GITHUB_ENV"
           echo "Kernel version: $VER"
 
-          # اكتشف الـ defconfig الصح للجهاز الحقيقي
-          # بنبعد عن: fpga, kasan, khwasan, rockpi, db845c, hikey
           echo "=== Available defconfigs ==="
           find arch/arm64/configs -name "*defconfig" | sort
           echo "==========================="
 
+          # بنختار defconfig بعيد عن fpga/kasan/debug
           DEFCFG=$(find arch/arm64/configs -name "*defconfig" \
             | grep -ivE 'fpga|kasan|khwasan|rockpi|db845c|hikey|gki_defconfig' \
             | grep -iE 'mgk_64_k510|mgk_64|k6789|mt6789|spinel|user' \
             | head -1 || true)
 
-          # لو ما لقيناش نبحث عن أي mgk_64 بدون fpga
           if [ -z "$DEFCFG" ]; then
             DEFCFG=$(find arch/arm64/configs -name "mgk_64*defconfig" \
               | grep -ivE 'fpga|kasan|khwasan' | head -1 || true)
           fi
 
-          # آخر fallback
           if [ -z "$DEFCFG" ]; then
             DEFCFG=$(find arch/arm64/configs -name "*defconfig" \
               | grep -ivE 'fpga|kasan|khwasan|rockpi|db845c|hikey' \
@@ -105,9 +102,6 @@ jobs:
           && echo "✓ MTK modules cloned" \
           || echo "::warning::MTK modules not found, continuing"
 
-      # ─────────────────────────────────────────────────────────────────
-      # KSU + SUSFS — بنعمل setup قبل build.sh
-      # ─────────────────────────────────────────────────────────────────
       - name: Setup KSU + SUSFS (${{ inputs.root_manager }})
         run: |
           set -e
@@ -172,25 +166,12 @@ jobs:
           echo "✓ KSU + SUSFS done"
 
       # ─────────────────────────────────────────────────────────────────
-      # Build — make مباشرة مع mrproper أولاً
-      # بنتجنب build.sh لأنه بيطلب clean source tree
+      # Build — بنحفظ full log في ملف ونطلعه كـ artifact
       # ─────────────────────────────────────────────────────────────────
       - name: Build kernel
         run: |
           set -e
           cd "$KERNEL_DIR"
-
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export CC=clang
-          export LD=ld.lld
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
 
           MAKE_FLAGS="
             ARCH=arm64
@@ -206,10 +187,8 @@ jobs:
             O=out
           "
 
-          # mrproper عشان ينظف أي حاجة من الـ KSU setup
-          echo "→ Running mrproper..."
+          echo "→ mrproper..."
           make $MAKE_FLAGS mrproper 2>/dev/null || true
-
           mkdir -p out
 
           # KSU + SUSFS config fragment
@@ -227,21 +206,31 @@ jobs:
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
           KCFG
 
-          # load defconfig
           echo "→ Loading defconfig: $DEFCFG_NAME"
           make $MAKE_FLAGS "$DEFCFG_NAME" 2>&1 | tail -5
 
-          # دمج KSU + SUSFS configs
-          echo "→ Merging KSU+SUSFS config fragment..."
+          echo "→ Merging KSU+SUSFS fragment..."
           ./scripts/kconfig/merge_config.sh \
             -m -O out \
             out/.config \
             /tmp/ksu_susfs.config 2>&1 | tail -5
           make $MAKE_FLAGS olddefconfig 2>&1 | tail -3
 
-          # Build!
           echo "→ Building kernel ($(nproc) cores)..."
-          make $MAKE_FLAGS -j$(nproc) 2>&1 | tail -60
+          # بنحفظ كل الـ output في build.log وبرضو بنعرضه
+          set +e
+          make $MAKE_FLAGS -j$(nproc) 2>&1 | tee ../build.log
+          BUILD_EXIT=${PIPESTATUS[0]}
+          set -e
+
+          # لو فشل نطبع آخر 100 سطر من الـ errors
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "::error::Build failed! Last errors:"
+            grep -iE 'error:|undefined|fatal' ../build.log | tail -30 || true
+            echo "--- Last 50 lines of build.log ---"
+            tail -50 ../build.log
+            exit $BUILD_EXIT
+          fi
 
           # ابحث عن الـ Image
           IMAGE=$(find out/arch/arm64/boot -name "Image" -o -name "Image.gz" \
@@ -251,6 +240,15 @@ jobs:
 
           echo "IMAGE_PATH=$IMAGE" >> "$GITHUB_ENV"
           echo "✓ Kernel: $IMAGE ($(du -sh $IMAGE | cut -f1))"
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "build-log"
+          path: build.log
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Verify KSU + SUSFS in kernel
         run: |
@@ -348,7 +346,6 @@ jobs:
             echo "KSU found   : ${{ env.KSU_IN_KERNEL }}"
             echo "SUSFS found : ${{ env.SUSFS_IN_KERNEL }}"
           } | tee out_artifacts/build_report.txt
-          echo "=== out_artifacts ==="
           ls -lh out_artifacts/ out_artifacts/managers/ out_artifacts/modules/ 2>/dev/null || true
 
       - name: Upload artifacts
