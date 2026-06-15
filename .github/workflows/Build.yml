@@ -56,8 +56,9 @@ jobs:
           export GIT_TERMINAL_PROMPT=0
           rm -rf ../susfs4ksu
 
+          # fixed order for your case first
           SUSFS_REF=""
-          for ref in gki-android14-5.10 gki-android13-5.10 gki-android12-5.10 kernel-5.10 main master; do
+          for ref in gki-android13-5.10 gki-android14-5.10 gki-android12-5.10 kernel-5.10 main master; do
             if (git ls-remote --heads https://gitlab.com/simonpunk/susfs4ksu.git "$ref" 2>/dev/null ||                 git ls-remote --heads https://github.com/simonpunk/susfs4ksu.git "$ref" 2>/dev/null) | grep -q .; then
               SUSFS_REF="$ref"
               break
@@ -71,23 +72,32 @@ jobs:
             exit 1
           }
 
+          cp -f ../susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
+          cp -f ../susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
+
           KSU_DIR=""
           for d in KernelSU-Next KernelSU; do
             [ -d "$d/kernel" ] && KSU_DIR="$d" && break
           done
           [ -n "$KSU_DIR" ] || { echo "::error::KernelSU dir not found"; exit 1; }
 
-          cp -f ../susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
-          cp -f ../susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
-
-          # optional: this patch may fail on some KernelSU-Next tags, so don't kill build
+          # optional - may fail with some KSU-Next tags
           if [ -f ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
-            patch -d "$KSU_DIR" -p1 --forward --batch < ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ||             echo "::warning::KernelSU SUSFS patch not clean on this KSU tag, continuing"
+            patch -d "$KSU_DIR" -p1 --forward --batch < ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ||             echo "::warning::KernelSU-side SUSFS patch not fully clean, continuing"
           fi
 
+          shopt -s nullglob
           PATCHED=0
-          for p in             ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch             ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch             ../susfs4ksu/kernel_patches/60_add_susfs_in_kernel.patch             ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch
-          do
+          PATCH_CANDIDATES=(
+            ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch
+            ../susfs4ksu/kernel_patches/50_add_susfs_in_*.patch
+            ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch
+            ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch
+            ../susfs4ksu/kernel_patches/60_add_susfs_in_kernel.patch
+            ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch
+          )
+
+          for p in "${PATCH_CANDIDATES[@]}"; do
             [ -f "$p" ] || continue
             if patch -p1 --forward --batch --dry-run < "$p" >/dev/null 2>&1; then
               patch -p1 --forward --batch < "$p"
@@ -102,8 +112,6 @@ jobs:
             ls -lah ../susfs4ksu/kernel_patches || true
             exit 1
           }
-
-          test -f include/linux/susfs.h || echo "::warning::susfs.h not found after patch"
 
       - name: Build GKI
         run: |
