@@ -53,7 +53,13 @@ jobs:
           set -e
           cd kernel_src
 
-          git clone --depth=1 https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu
+          export GIT_TERMINAL_PROMPT=0
+          rm -rf ../susfs4ksu
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu 2>/dev/null || \
+          git clone --depth=1 https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu || {
+            echo "::error::Failed to clone susfs4ksu from both GitLab and GitHub"
+            exit 1
+          }
 
           # copy files if present
           cp -f ../susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
