@@ -198,19 +198,27 @@ jobs:
           make $MAKE_FLAGS mrproper 2>/dev/null || true
           mkdir -p out
 
-          cat > /tmp/ksu_susfs.config << 'KCFG'
-          CONFIG_KSU=y
-          CONFIG_KSU_DEBUG=n
-          CONFIG_KSU_SUSFS=y
-          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
-          CONFIG_KSU_SUSFS_SUS_PATH=y
-          CONFIG_KSU_SUSFS_SUS_MOUNT=y
-          CONFIG_KSU_SUSFS_SUS_KSTAT=y
-          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
-          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-          CONFIG_KSU_SUSFS_SPOOFER=y
-          CONFIG_KSU_SUSFS_ENABLE_LOG=y
-          KCFG
+          printf '%s\n' \
+                    'CONFIG_KSU=y' \
+                    'CONFIG_KSU_DEBUG=n' \
+                    'CONFIG_KSU_SUSFS=y' \
+                    'CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y' \
+                    'CONFIG_KSU_SUSFS_SUS_PATH=y' \
+                    'CONFIG_KSU_SUSFS_SUS_MOUNT=y' \
+                    'CONFIG_KSU_SUSFS_SUS_KSTAT=y' \
+                    'CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n' \
+                    'CONFIG_KSU_SUSFS_TRY_UMOUNT=y' \
+                    'CONFIG_KSU_SUSFS_SPOOFER=y' \
+                    'CONFIG_KSU_SUSFS_ENABLE_LOG=y' \
+                    'CONFIG_MEDIA_SUPPORT=y' \
+                    'CONFIG_VIDEO_DEV=y' \
+                    'CONFIG_MEDIA_CONTROLLER=y' \
+                    'CONFIG_VIDEO_V4L2_SUBDEV_API=y' \
+                    'CONFIG_NET=y' \
+                    'CONFIG_WIRELESS=y' \
+                    'CONFIG_WIRELESS_EXT=y' \
+                    'CONFIG_LOCALVERSION_AUTO=n' \
+                    > /tmp/ksu_susfs.config
 
           echo "→ Loading defconfig: $DEFCFG_NAME"
           make $MAKE_FLAGS "$DEFCFG_NAME" 2>&1 | tail -5
