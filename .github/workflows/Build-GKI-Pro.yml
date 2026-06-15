@@ -1,0 +1,207 @@
+name: "Spinel GKI Pro (KSU-Next + SUSFS + AnyKernel + SUSFS Module)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_source_url:
+        description: "Kernel source repo URL"
+        required: true
+        default: "https://github.com/MiCode/Xiaomi_Kernel_OpenSource"
+        type: string
+      kernel_branch:
+        description: "Kernel source branch"
+        required: true
+        default: "spinel-v-oss"
+        type: string
+      susfs_repo:
+        description: "SUSFS repo"
+        required: true
+        default: "https://github.com/simonpunk/susfs4ksu.git"
+        type: string
+      anykernel_repo:
+        description: "AnyKernel3 repo"
+        required: true
+        default: "https://github.com/osm0sis/AnyKernel3"
+        type: string
+      anykernel_branch:
+        description: "AnyKernel3 branch"
+        required: true
+        default: "master"
+        type: string
+      kernel_name:
+        description: "Kernel name in zip"
+        required: true
+        default: "MKVenom-GKI-KSU-SUSFS"
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex git jq \
+            libssl-dev libelf-dev lz4 python3 python-is-python3 \
+            zip unzip cpio pahole pkg-config rsync \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            clang llvm lld
+
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          df -h
+
+      - name: Clone kernel source
+        run: |
+          set -e
+          git clone --depth=1 --branch "${{ inputs.kernel_branch }}" "${{ inputs.kernel_source_url }}" kernel_src
+          cd kernel_src
+          test -f arch/arm64/configs/gki_defconfig || { echo "::error::gki_defconfig not found"; exit 1; }
+
+      - name: Setup KernelSU-Next
+        run: |
+          set -e
+          cd kernel_src
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash
+
+      - name: Setup SUSFS (stable-first)
+        run: |
+          set -e
+          cd kernel_src
+
+          KVER="$(make kernelversion | cut -d. -f1,2)"
+          SUSFS_REPO="${{ inputs.susfs_repo }}"
+          echo "Kernel version: $KVER"
+          echo "SUSFS repo: $SUSFS_REPO"
+
+          # Prefer latest tag first (more stable)
+          TAG="$(git ls-remote --tags "$SUSFS_REPO" 2>/dev/null | awk '{print $2}' | sed 's#refs/tags/##' | sed 's/\^{}//' | sort -V | tail -n1 || true)"
+          if [ -n "$TAG" ]; then
+            git clone --depth=1 --branch "$TAG" "$SUSFS_REPO" ../susfs4ksu || true
+          fi
+          [ -d ../susfs4ksu ] || git clone --depth=1 "$SUSFS_REPO" ../susfs4ksu
+
+          # KernelSU dir detect
+          KSU_DIR=""
+          for d in KernelSU-Next KernelSU; do
+            [ -d "$d/kernel" ] && KSU_DIR="$d" && break
+          done
+          [ -n "$KSU_DIR" ] || { echo "::error::KernelSU dir not found"; exit 1; }
+
+          # Copy SUSFS source/headers (some branches have different header set)
+          cp -f ../susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
+          cp -f ../susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
+
+          # Patch KernelSU side
+          if [ -f ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
+            patch -d "$KSU_DIR" -p1 --forward < ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+          fi
+
+          PATCHED=0
+          for p in $(ls -1 ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch 2>/dev/null | sort -V -r); do
+            if patch -p1 --forward --dry-run < "$p" >/dev/null 2>&1; then
+              patch -p1 --forward < "$p"
+              echo "Applied: $(basename "$p")"
+              PATCHED=1
+              break
+            fi
+          done
+
+          if [ "$PATCHED" -eq 0 ]; then
+            for p in \
+              ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch \
+              ../susfs4ksu/kernel_patches/60_add_susfs_in_kernel.patch \
+              ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch
+            do
+              [ -f "$p" ] || continue
+              if patch -p1 --forward --dry-run < "$p" >/dev/null 2>&1; then
+                patch -p1 --forward < "$p"
+                echo "Applied fallback: $(basename "$p")"
+                PATCHED=1
+                break
+              fi
+            done
+          fi
+
+          [ "$PATCHED" -eq 1 ] || { echo "::error::No SUSFS kernel patch applied cleanly"; exit 1; }
+          test -f include/linux/susfs.h || { echo "::error::susfs.h missing"; exit 1; }
+
+      - name: Build GKI
+        run: |
+          set -e
+          cd kernel_src
+          MAKE_FLAGS="
+            ARCH=arm64
+            O=out
+            CC=clang
+            LLVM=1
+            LLVM_IAS=1
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CLANG_TRIPLE=aarch64-linux-gnu-
+          "
+
+          make $MAKE_FLAGS mrproper
+          mkdir -p out
+
+          printf '%s\n' \
+            'CONFIG_KSU=y' \
+            'CONFIG_KSU_DEBUG=n' \
+            'CONFIG_KSU_SUSFS=y' \
+            'CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y' \
+            'CONFIG_KSU_SUSFS_SUS_PATH=y' \
+            'CONFIG_KSU_SUSFS_SUS_MOUNT=y' \
+            'CONFIG_KSU_SUSFS_SUS_KSTAT=y' \
+            'CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n' \
+            'CONFIG_KSU_SUSFS_TRY_UMOUNT=y' \
+            'CONFIG_KSU_SUSFS_SPOOFER=y' \
+            'CONFIG_KSU_SUSFS_ENABLE_LOG=y' \
+            'CONFIG_LOCALVERSION_AUTO=n' \
+            'CONFIG_CPQ_IOSCHED=n' \
+            > /tmp/ksu_susfs.config
+
+          make $MAKE_FLAGS gki_defconfig
+          ./scripts/kconfig/merge_config.sh -m -O out out/.config /tmp/ksu_susfs.config
+          make $MAKE_FLAGS olddefconfig
+          make $MAKE_FLAGS -j"$(nproc)"
+
+          test -f out/arch/arm64/boot/Image || { echo "::error::Image missing"; exit 1; }
+
+      - name: Pack AnyKernel3
+        run: |
+          set -e
+          git clone --depth=1 --branch "${{ inputs.anykernel_branch }}" "${{ inputs.anykernel_repo }}" AnyKernel3
+          cp -f kernel_src/out/arch/arm64/boot/Image AnyKernel3/Image
+          sed -i "s/^kernel.string=.*/kernel.string=${{ inputs.kernel_name }}/" AnyKernel3/anykernel.sh || true
+
+          DATE="$(date +%Y%m%d-%H%M)"
+          ZIP_NAME="${{ inputs.kernel_name }}-${DATE}.zip"
+
+          cd AnyKernel3
+          zip -r9 "../${ZIP_NAME}" . -x ".git/*" "README.md"
+          cd ..
+
+          mkdir -p artifacts
+          mv -f "${ZIP_NAME}" artifacts/
+          cp -f kernel_src/out/.config artifacts/gki.config
+          cp -f kernel_src/out/arch/arm64/boot/Image artifacts/Image
+
+      - name: Download latest susfs4ksu-module release zip
+        run: |
+          set -e
+          mkdir -p artifacts
+          API="https://api.github.com/repos/sidex15/susfs4ksu-module/releases/latest"
+          URL="$(curl -fsSL "$API" | jq -r '.assets[] | select(.name|test("\\.zip$")) | .browser_download_url' | head -n1)"
+          [ -n "$URL" ] || { echo "::error::No module zip asset found"; exit 1; }
+          echo "Downloading: $URL"
+          curl -fL "$URL" -o artifacts/susfs4ksu-module-latest.zip
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: spinel-gki-pro
+          path: artifacts/*
