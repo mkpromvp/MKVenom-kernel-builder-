@@ -55,54 +55,55 @@ jobs:
 
           export GIT_TERMINAL_PROMPT=0
           rm -rf ../susfs4ksu
-          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu 2>/dev/null || \
-          git clone --depth=1 https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu || {
-            echo "::error::Failed to clone susfs4ksu from both GitLab and GitHub"
+
+          SUSFS_REF=""
+          for ref in gki-android14-5.10 gki-android13-5.10 gki-android12-5.10 kernel-5.10 main master; do
+            if (git ls-remote --heads https://gitlab.com/simonpunk/susfs4ksu.git "$ref" 2>/dev/null ||                 git ls-remote --heads https://github.com/simonpunk/susfs4ksu.git "$ref" 2>/dev/null) | grep -q .; then
+              SUSFS_REF="$ref"
+              break
+            fi
+          done
+          [ -n "$SUSFS_REF" ] || SUSFS_REF="main"
+          echo "Using SUSFS ref: $SUSFS_REF"
+
+          git clone --depth=1 --branch "$SUSFS_REF" https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu 2>/dev/null ||           git clone --depth=1 --branch "$SUSFS_REF" https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu || {
+            echo "::error::Failed to clone susfs4ksu"
             exit 1
           }
 
-          # copy files if present
-          cp -f ../susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
-          cp -f ../susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
-
-          # detect KernelSU dir
           KSU_DIR=""
           for d in KernelSU-Next KernelSU; do
             [ -d "$d/kernel" ] && KSU_DIR="$d" && break
           done
           [ -n "$KSU_DIR" ] || { echo "::error::KernelSU dir not found"; exit 1; }
 
-          # patch KernelSU side
+          cp -f ../susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
+          cp -f ../susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
+
+          # optional: this patch may fail on some KernelSU-Next tags, so don't kill build
           if [ -f ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
-            patch -d "$KSU_DIR" -p1 --forward < ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+            patch -d "$KSU_DIR" -p1 --forward --batch < ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ||             echo "::warning::KernelSU SUSFS patch not clean on this KSU tag, continuing"
           fi
 
-          # patch kernel side
           PATCHED=0
-          for p in $(ls -1 ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch 2>/dev/null | sort -V -r); do
-            if patch -p1 --forward --dry-run < "$p" >/dev/null 2>&1; then
-              patch -p1 --forward < "$p"
+          for p in             ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch             ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch             ../susfs4ksu/kernel_patches/60_add_susfs_in_kernel.patch             ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch
+          do
+            [ -f "$p" ] || continue
+            if patch -p1 --forward --batch --dry-run < "$p" >/dev/null 2>&1; then
+              patch -p1 --forward --batch < "$p"
+              echo "Applied SUSFS patch: $(basename "$p")"
               PATCHED=1
               break
             fi
           done
 
-          if [ "$PATCHED" -eq 0 ]; then
-            for p in \
-              ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch \
-              ../susfs4ksu/kernel_patches/60_add_susfs_in_kernel.patch \
-              ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch
-            do
-              [ -f "$p" ] || continue
-              if patch -p1 --forward --dry-run < "$p" >/dev/null 2>&1; then
-                patch -p1 --forward < "$p"
-                PATCHED=1
-                break
-              fi
-            done
-          fi
+          [ "$PATCHED" -eq 1 ] || {
+            echo "::error::No SUSFS patch applied cleanly"
+            ls -lah ../susfs4ksu/kernel_patches || true
+            exit 1
+          }
 
-          [ "$PATCHED" -eq 1 ] || { echo "::error::No SUSFS patch applied cleanly"; exit 1; }
+          test -f include/linux/susfs.h || echo "::warning::susfs.h not found after patch"
 
       - name: Build GKI
         run: |
