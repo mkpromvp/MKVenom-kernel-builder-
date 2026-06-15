@@ -1,0 +1,92 @@
+name: "Spinel GKI Kernel Builder (5.10)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_source_url:
+        description: "Kernel source repo URL"
+        required: true
+        default: "https://github.com/MiCode/Xiaomi_Kernel_OpenSource"
+        type: string
+      kernel_branch:
+        description: "Kernel source branch"
+        required: true
+        default: "spinel-v-oss"
+        type: string
+
+jobs:
+  build-gki:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex git \
+            libssl-dev libelf-dev lz4 python3 python-is-python3 \
+            zip unzip cpio pahole pkg-config rsync \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            clang llvm lld
+          echo "Dependencies installed"
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          df -h
+
+      - name: Clone kernel source
+        run: |
+          set -e
+          git clone --depth=1 \
+            --branch "${{ inputs.kernel_branch }}" \
+            "${{ inputs.kernel_source_url }}" \
+            kernel_src
+
+          cd kernel_src
+          make kernelversion || true
+
+          test -f arch/arm64/configs/gki_defconfig || {
+            echo "::error::gki_defconfig not found in this source branch"
+            exit 1
+          }
+
+      - name: Build GKI kernel
+        run: |
+          set -e
+          cd kernel_src
+
+          MAKE_FLAGS="
+            ARCH=arm64
+            O=out
+            CC=clang
+            LLVM=1
+            LLVM_IAS=1
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CLANG_TRIPLE=aarch64-linux-gnu-
+          "
+
+          make $MAKE_FLAGS mrproper
+          make $MAKE_FLAGS gki_defconfig
+          make $MAKE_FLAGS olddefconfig
+          make $MAKE_FLAGS -j"$(nproc)"
+
+          ls -lah out/arch/arm64/boot || true
+
+      - name: Pack outputs
+        run: |
+          set -e
+          mkdir -p artifacts
+          cp -v kernel_src/out/.config artifacts/gki.config || true
+          cp -v kernel_src/out/vmlinux artifacts/vmlinux || true
+          cp -v kernel_src/out/arch/arm64/boot/Image artifacts/Image || true
+          cp -v kernel_src/out/arch/arm64/boot/Image.gz artifacts/Image.gz || true
+          cp -v kernel_src/out/arch/arm64/boot/Image.lz4 artifacts/Image.lz4 || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spinel-gki-kernel
+          path: artifacts/*
