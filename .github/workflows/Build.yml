@@ -143,6 +143,7 @@ jobs:
             'CONFIG_KSU_SUSFS_TRY_UMOUNT=y' \
             'CONFIG_KSU_SUSFS_SPOOFER=y' \
             'CONFIG_KSU_SUSFS_ENABLE_LOG=y' \
+            'CONFIG_KSU_SUSFS_SUS_SU=n' \
             'CONFIG_LOCALVERSION_AUTO=n' \
             > /tmp/ksu_susfs.config
 
