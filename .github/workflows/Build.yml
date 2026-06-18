@@ -138,7 +138,12 @@ jobs:
           make $MAKE_FLAGS gki_defconfig
           ./scripts/kconfig/merge_config.sh -m -O out out/.config /tmp/ksu_susfs.config
           make $MAKE_FLAGS olddefconfig
-          make $MAKE_FLAGS -j"$(nproc)"
+          set +e
+          make $MAKE_FLAGS -j"$(nproc)" 2>&1 | tee /tmp/kernel-build.log
+          BUILD_RC=${PIPESTATUS[0]}
+          echo "BUILD_RC=$BUILD_RC" | tee /tmp/build-result.log
+          set -e
+          [ "$BUILD_RC" -eq 0 ] || exit "$BUILD_RC"
 
           test -f out/arch/arm64/boot/Image || { echo "::error::Image not found"; exit 1; }
 
@@ -161,8 +166,20 @@ jobs:
           cp -f kernel_src/out/arch/arm64/boot/Image artifacts/Image
           cp -f kernel_src/out/.config artifacts/gki.config
 
+      - name: Collect build logs
+        if: always()
+        run: |
+          mkdir -p artifacts/logs
+          cp -f /tmp/kernel-build.log artifacts/logs/kernel-build.log || true
+          cp -f /tmp/build-result.log artifacts/logs/build-result.log || true
+          cp -f /tmp/ksu_susfs.config artifacts/logs/ksu_susfs.config || true
+          cp -f kernel_src/out/.config artifacts/logs/final.config || true
+          find kernel_src -type f \( -name "*.rej" -o -name "*.orig" \) -exec cp --parents {} artifacts/logs/ \; || true
+
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: kernel-gki-ksu-susfs-anykernel
           path: artifacts/*
+          if-no-files-found: warn
