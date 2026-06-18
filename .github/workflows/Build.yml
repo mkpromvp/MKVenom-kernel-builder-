@@ -25,15 +25,40 @@ jobs:
     timeout-minutes: 240
 
     steps:
-      - name: Install deps
+      - name: Install deps (smart + safe)
         run: |
+          set -e
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ccache curl flex git \
-            libssl-dev libelf-dev lz4 python3 python-is-python3 \
-            zip unzip cpio pahole pkg-config rsync \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+
+          # Minimal required for this workflow
+          REQUIRED_PKGS=(
+            bc bison flex git curl
+            build-essential
+            libssl-dev libelf-dev
             clang llvm lld
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+            lz4 python3 zip unzip cpio rsync pahole
+          )
+
+          MISSING=()
+          for pkg in "${REQUIRED_PKGS[@]}"; do
+            dpkg -s "$pkg" >/dev/null 2>&1 || MISSING+=("$pkg")
+          done
+
+          if [ "${#MISSING[@]}" -eq 0 ]; then
+            echo "All required packages already installed."
+            exit 0
+          fi
+
+          echo "Missing packages: ${MISSING[*]}"
+          if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING[@]}" >/tmp/apt-install.log 2>&1; then
+            echo "Smart install failed, retrying with safe fallback..."
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends               bc bison flex git curl build-essential               libssl-dev libelf-dev clang llvm lld               gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu               lz4 python3 zip unzip cpio rsync pahole >/tmp/apt-install.log 2>&1
+          fi
+
+          echo "Deps install done."
+          tail -n 40 /tmp/apt-install.log || true
 
       - name: Clone kernel source
         run: |
