@@ -29,36 +29,20 @@ jobs:
         run: |
           set -e
           sudo apt-get update -qq
-
-          # Minimal required for this workflow
           REQUIRED_PKGS=(
-            bc bison flex git curl
-            build-essential
+            bc bison flex git curl build-essential
             libssl-dev libelf-dev
             clang llvm lld
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
             lz4 python3 zip unzip cpio rsync pahole
           )
-
           MISSING=()
           for pkg in "${REQUIRED_PKGS[@]}"; do
             dpkg -s "$pkg" >/dev/null 2>&1 || MISSING+=("$pkg")
           done
-
-          if [ "${#MISSING[@]}" -eq 0 ]; then
-            echo "All required packages already installed."
-            exit 0
+          if [ "${#MISSING[@]}" -gt 0 ]; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING[@]}"
           fi
-
-          echo "Missing packages: ${MISSING[*]}"
-          if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING[@]}" >/tmp/apt-install.log 2>&1; then
-            echo "Smart install failed, retrying with safe fallback..."
-            sudo apt-get update -qq
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends               bc bison flex git curl build-essential               libssl-dev libelf-dev clang llvm lld               gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu               lz4 python3 zip unzip cpio rsync pahole >/tmp/apt-install.log 2>&1
-          fi
-
-          echo "Deps install done."
-          tail -n 40 /tmp/apt-install.log || true
 
       - name: Clone kernel source
         run: |
@@ -67,16 +51,17 @@ jobs:
           cd kernel_src
           test -f arch/arm64/configs/gki_defconfig || { echo "::error::gki_defconfig not found"; exit 1; }
 
-      - name: Setup KernelSU-Next + SUSFS (strict compatible)
+      - name: Setup KernelSU-Next + SUSFS (stable)
         run: |
           set -e
+          exec > >(tee /tmp/setup-susfs.log) 2>&1
           cd kernel_src
           export GIT_TERMINAL_PROMPT=0
 
-          # Setup KSUN (initial)
+          # KernelSU-Next
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash
 
-          # Clone SUSFS fixed branch for 5.10 GKI
+          # SUSFS source
           rm -rf ../susfs4ksu
           git clone --depth=1 --branch gki-android13-5.10 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu 2>/dev/null || \
           git clone --depth=1 --branch gki-android13-5.10 https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu
@@ -84,37 +69,17 @@ jobs:
           cp -f ../susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
           cp -f ../susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
 
-          KSU_DIR="KernelSU-Next"
-          [ -d "$KSU_DIR/kernel" ] || { echo "::error::KernelSU-Next dir not found"; exit 1; }
+          # IMPORTANT:
+          # Do NOT apply KernelSU-side SUSFS patch (10_enable_susfs_for_ksu.patch)
+          # because it's incompatible with current KernelSU-Next tags and causes partial patch breakage.
 
-          KSU_PATCH="../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-
-          # Find compatible KSUN tag if current one is not compatible
-          if [ -f "$KSU_PATCH" ]; then
-            if ! patch -d "$KSU_DIR" -p1 --forward --batch --dry-run < "$KSU_PATCH" >/dev/null 2>&1; then
-              echo "Current KSUN tag not compatible, searching..."
-              FOUND=0
-              for t in $(git -C "$KSU_DIR" tag --sort=-v:refname); do
-                curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$t" >/dev/null 2>&1 || true
-                if patch -d "$KSU_DIR" -p1 --forward --batch --dry-run < "$KSU_PATCH" >/dev/null 2>&1; then
-                  echo "Using KSUN tag: $t"
-                  patch -d "$KSU_DIR" -p1 --forward --batch < "$KSU_PATCH"
-                  FOUND=1
-                  break
-                fi
-              done
-              [ "$FOUND" -eq 1 ] || { echo "::error::No compatible KSUN tag found for SUSFS patch"; exit 1; }
-            else
-              patch -d "$KSU_DIR" -p1 --forward --batch < "$KSU_PATCH"
-            fi
-          fi
-
-          # Apply SUSFS kernel patch (strict)
           PATCHED=0
           for p in \
             ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch \
             ../susfs4ksu/kernel_patches/50_add_susfs_in_*.patch \
-            ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch
+            ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch \
+            ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch \
+            ../susfs4ksu/kernel_patches/60_add_susfs_in_kernel.patch
           do
             [ -f "$p" ] || continue
             if patch -p1 --forward --batch --dry-run < "$p" >/dev/null 2>&1; then
@@ -124,6 +89,7 @@ jobs:
               break
             fi
           done
+
           [ "$PATCHED" -eq 1 ] || { echo "::error::No SUSFS kernel patch applied cleanly"; exit 1; }
 
       - name: Build GKI
@@ -163,6 +129,7 @@ jobs:
           make $MAKE_FLAGS gki_defconfig
           ./scripts/kconfig/merge_config.sh -m -O out out/.config /tmp/ksu_susfs.config
           make $MAKE_FLAGS olddefconfig
+
           set +e
           make $MAKE_FLAGS -j"$(nproc)" 2>&1 | tee /tmp/kernel-build.log
           BUILD_RC=${PIPESTATUS[0]}
@@ -191,10 +158,11 @@ jobs:
           cp -f kernel_src/out/arch/arm64/boot/Image artifacts/Image
           cp -f kernel_src/out/.config artifacts/gki.config
 
-      - name: Collect build logs
+      - name: Collect logs
         if: always()
         run: |
           mkdir -p artifacts/logs
+          cp -f /tmp/setup-susfs.log artifacts/logs/setup-susfs.log || true
           cp -f /tmp/kernel-build.log artifacts/logs/kernel-build.log || true
           cp -f /tmp/build-result.log artifacts/logs/build-result.log || true
           cp -f /tmp/ksu_susfs.config artifacts/logs/ksu_susfs.config || true
@@ -206,5 +174,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kernel-gki-ksu-susfs-anykernel
-          path: artifacts/*
           if-no-files-found: warn
+          path: artifacts/**
