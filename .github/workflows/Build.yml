@@ -42,62 +42,55 @@ jobs:
           cd kernel_src
           test -f arch/arm64/configs/gki_defconfig || { echo "::error::gki_defconfig not found"; exit 1; }
 
-      - name: Setup KernelSU-Next
+      - name: Setup KernelSU-Next + SUSFS (strict compatible)
         run: |
           set -e
           cd kernel_src
+          export GIT_TERMINAL_PROMPT=0
+
+          # Setup KSUN (initial)
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash
 
-      - name: Setup SUSFS
-        run: |
-          set -e
-          cd kernel_src
-
-          export GIT_TERMINAL_PROMPT=0
+          # Clone SUSFS fixed branch for 5.10 GKI
           rm -rf ../susfs4ksu
-
-          # fixed order for your case first
-          SUSFS_REF=""
-          for ref in gki-android13-5.10 gki-android14-5.10 gki-android12-5.10 kernel-5.10 main master; do
-            if (git ls-remote --heads https://gitlab.com/simonpunk/susfs4ksu.git "$ref" 2>/dev/null ||                 git ls-remote --heads https://github.com/simonpunk/susfs4ksu.git "$ref" 2>/dev/null) | grep -q .; then
-              SUSFS_REF="$ref"
-              break
-            fi
-          done
-          [ -n "$SUSFS_REF" ] || SUSFS_REF="main"
-          echo "Using SUSFS ref: $SUSFS_REF"
-
-          git clone --depth=1 --branch "$SUSFS_REF" https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu 2>/dev/null ||           git clone --depth=1 --branch "$SUSFS_REF" https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu || {
-            echo "::error::Failed to clone susfs4ksu"
-            exit 1
-          }
+          git clone --depth=1 --branch gki-android13-5.10 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu 2>/dev/null || \
+          git clone --depth=1 --branch gki-android13-5.10 https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu
 
           cp -f ../susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
           cp -f ../susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
 
-          KSU_DIR=""
-          for d in KernelSU-Next KernelSU; do
-            [ -d "$d/kernel" ] && KSU_DIR="$d" && break
-          done
-          [ -n "$KSU_DIR" ] || { echo "::error::KernelSU dir not found"; exit 1; }
+          KSU_DIR="KernelSU-Next"
+          [ -d "$KSU_DIR/kernel" ] || { echo "::error::KernelSU-Next dir not found"; exit 1; }
 
-          # optional - may fail with some KSU-Next tags
-          if [ -f ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ]; then
-            patch -d "$KSU_DIR" -p1 --forward --batch < ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ||             echo "::warning::KernelSU-side SUSFS patch not fully clean, continuing"
+          KSU_PATCH="../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+          # Find compatible KSUN tag if current one is not compatible
+          if [ -f "$KSU_PATCH" ]; then
+            if ! patch -d "$KSU_DIR" -p1 --forward --batch --dry-run < "$KSU_PATCH" >/dev/null 2>&1; then
+              echo "Current KSUN tag not compatible, searching..."
+              FOUND=0
+              for t in $(git -C "$KSU_DIR" tag --sort=-v:refname); do
+                curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$t" >/dev/null 2>&1 || true
+                if patch -d "$KSU_DIR" -p1 --forward --batch --dry-run < "$KSU_PATCH" >/dev/null 2>&1; then
+                  echo "Using KSUN tag: $t"
+                  patch -d "$KSU_DIR" -p1 --forward --batch < "$KSU_PATCH"
+                  FOUND=1
+                  break
+                fi
+              done
+              [ "$FOUND" -eq 1 ] || { echo "::error::No compatible KSUN tag found for SUSFS patch"; exit 1; }
+            else
+              patch -d "$KSU_DIR" -p1 --forward --batch < "$KSU_PATCH"
+            fi
           fi
 
-          shopt -s nullglob
+          # Apply SUSFS kernel patch (strict)
           PATCHED=0
-          PATCH_CANDIDATES=(
-            ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch
-            ../susfs4ksu/kernel_patches/50_add_susfs_in_*.patch
+          for p in \
+            ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch \
+            ../susfs4ksu/kernel_patches/50_add_susfs_in_*.patch \
             ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch
-            ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch
-            ../susfs4ksu/kernel_patches/60_add_susfs_in_kernel.patch
-            ../susfs4ksu/kernel_patches/50_add_susfs_in_fs.patch
-          )
-
-          for p in "${PATCH_CANDIDATES[@]}"; do
+          do
             [ -f "$p" ] || continue
             if patch -p1 --forward --batch --dry-run < "$p" >/dev/null 2>&1; then
               patch -p1 --forward --batch < "$p"
@@ -106,12 +99,7 @@ jobs:
               break
             fi
           done
-
-          [ "$PATCHED" -eq 1 ] || {
-            echo "::error::No SUSFS patch applied cleanly"
-            ls -lah ../susfs4ksu/kernel_patches || true
-            exit 1
-          }
+          [ "$PATCHED" -eq 1 ] || { echo "::error::No SUSFS kernel patch applied cleanly"; exit 1; }
 
       - name: Build GKI
         run: |
