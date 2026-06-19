@@ -16,7 +16,7 @@ on:
       kernel_name:
         description: "Kernel name"
         required: true
-        default: "MKVenom-GKI-KSU-SUSFS"
+        default: "MKVenom-GKI-KSU-SUSFS_SPINEL"
         type: string
 
 jobs:
@@ -25,43 +25,32 @@ jobs:
     timeout-minutes: 240
 
     steps:
-      - name: Install deps (smart + safe)
+      - name: Install deps
         run: |
           set -e
           sudo apt-get update -qq
-          REQUIRED_PKGS=(
-            bc bison flex git curl build-essential
-            libssl-dev libelf-dev
-            clang llvm lld
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            bc bison flex git curl build-essential \
+            libssl-dev libelf-dev \
+            clang llvm lld \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             lz4 python3 zip unzip cpio rsync pahole
-          )
-          MISSING=()
-          for pkg in "${REQUIRED_PKGS[@]}"; do
-            dpkg -s "$pkg" >/dev/null 2>&1 || MISSING+=("$pkg")
-          done
-          if [ "${#MISSING[@]}" -gt 0 ]; then
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING[@]}"
-          fi
 
       - name: Clone kernel source
         run: |
           set -e
           git clone --depth=1 --branch "${{ inputs.kernel_branch }}" "${{ inputs.kernel_source_url }}" kernel_src
-          cd kernel_src
-          test -f arch/arm64/configs/gki_defconfig || { echo "::error::gki_defconfig not found"; exit 1; }
+          test -f kernel_src/arch/arm64/configs/gki_defconfig
 
-      - name: Setup KernelSU-Next + SUSFS (stable)
+      - name: Setup KernelSU-Next + SUSFS
         run: |
           set -e
           exec > >(tee /tmp/setup-susfs.log) 2>&1
           cd kernel_src
           export GIT_TERMINAL_PROMPT=0
 
-          # KernelSU-Next
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash
 
-          # SUSFS source
           rm -rf ../susfs4ksu
           git clone --depth=1 --branch gki-android13-5.10 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs4ksu 2>/dev/null || \
           git clone --depth=1 --branch gki-android13-5.10 https://github.com/simonpunk/susfs4ksu.git ../susfs4ksu
@@ -69,17 +58,11 @@ jobs:
           cp -f ../susfs4ksu/kernel_patches/fs/susfs.c fs/ || true
           cp -f ../susfs4ksu/kernel_patches/include/linux/* include/linux/ || true
 
-          # IMPORTANT:
-          # Do NOT apply KernelSU-side SUSFS patch (10_enable_susfs_for_ksu.patch)
-          # because it's incompatible with current KernelSU-Next tags and causes partial patch breakage.
-
           PATCHED=0
           for p in \
             ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android13-5.10.patch \
             ../susfs4ksu/kernel_patches/50_add_susfs_in_*.patch \
-            ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch \
-            ../susfs4ksu/kernel_patches/50_add_susfs_in_kernel.patch \
-            ../susfs4ksu/kernel_patches/60_add_susfs_in_kernel.patch
+            ../susfs4ksu/kernel_patches/add_susfs_in_kernel-*.patch
           do
             [ -f "$p" ] || continue
             if patch -p1 --forward --batch --dry-run < "$p" >/dev/null 2>&1; then
@@ -90,7 +73,7 @@ jobs:
             fi
           done
 
-          [ "$PATCHED" -eq 1 ] || { echo "::error::No SUSFS kernel patch applied cleanly"; exit 1; }
+          [ "$PATCHED" -eq 1 ] || { echo "::error::No SUSFS patch applied cleanly"; exit 1; }
 
       - name: Build GKI
         run: |
@@ -130,40 +113,24 @@ jobs:
           ./scripts/kconfig/merge_config.sh -m -O out out/.config /tmp/ksu_susfs.config
           make $MAKE_FLAGS olddefconfig
 
-          # Reduce linker pressure to avoid SIGTERM at LTO stage
-          ./scripts/config --file out/.config -d LTO_CLANG_FULL -e LTO_CLANG_THIN || true
-          ./scripts/config --file out/.config -d DEBUG_INFO -d DEBUG_INFO_BTF || true
-          make $MAKE_FLAGS olddefconfig
-
           set +e
-          (
-            make $MAKE_FLAGS -j3 2>&1 | tee /tmp/kernel-build.log
-          ) &
-          MAKE_PID=$!
-          while kill -0 "$MAKE_PID" 2>/dev/null; do
-            echo "[keepalive] $(date +%H:%M:%S) building..."
-            sleep 60
-          done
-          wait "$MAKE_PID"
-          BUILD_RC=$?
+          make $MAKE_FLAGS -j3 2>&1 | tee /tmp/kernel-build.log
+          BUILD_RC=${PIPESTATUS[0]}
           echo "BUILD_RC=$BUILD_RC" | tee /tmp/build-result.log
           set -e
           [ "$BUILD_RC" -eq 0 ] || exit "$BUILD_RC"
 
-          test -f out/arch/arm64/boot/Image || { echo "::error::Image not found"; exit 1; }
-
-      - name: Pack AnyKernel3
+      - name: Pack AnyKernel3 (spinel only, kernel-only flash)
         run: |
           set -e
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
-          cp -f kernel_src/out/arch/arm64/boot/Image AnyKernel3/Image          # Smart + safe AnyKernel3 config for spinel only (kernel-only flash)
-          KNAME="${{ inputs.kernel_name }}"
-          cat > AnyKernel3/anykernel.sh <<AK3
-### AnyKernel3 Ramdisk-less Kernel Flash Script
-## generated by CI
+          cp -f kernel_src/out/arch/arm64/boot/Image AnyKernel3/Image
+
+          cat > AnyKernel3/anykernel.sh <<'AK3'
+### AnyKernel3 - kernel-only script (no ramdisk unpack)
 
 properties() { '
-kernel.string='"$KNAME"'
+kernel.string=__KERNEL_STRING__
 do.devicecheck=1
 do.modules=0
 do.systemless=0
@@ -179,7 +146,6 @@ supported.patchlevels=
 supported.vendorpatchlevels=
 '; } # end properties
 
-# Kernel-only mode
 BLOCK=auto;
 IS_SLOT_DEVICE=auto;
 RAMDISK_COMPRESSION=auto;
@@ -187,13 +153,11 @@ PATCH_VBMETA_FLAG=auto;
 
 . tools/ak3-core.sh;
 
-# No ramdisk unpack/repack
 split_boot;
 flash_boot;
 AK3
 
-          mkdir -p artifacts/logs
-          cp -f AnyKernel3/anykernel.sh artifacts/logs/anykernel.final.sh
+          sed -i "s|__KERNEL_STRING__|${{ inputs.kernel_name }}|g" AnyKernel3/anykernel.sh
 
           DATE="$(date +%Y%m%d-%H%M)"
           ZIP_NAME="${{ inputs.kernel_name }}-${DATE}.zip"
@@ -202,10 +166,11 @@ AK3
           zip -r9 "../${ZIP_NAME}" . -x ".git/*" "README.md"
           cd ..
 
-          mkdir -p artifacts
+          mkdir -p artifacts artifacts/logs
           mv -f "${ZIP_NAME}" artifacts/
           cp -f kernel_src/out/arch/arm64/boot/Image artifacts/Image
           cp -f kernel_src/out/.config artifacts/gki.config
+          cp -f AnyKernel3/anykernel.sh artifacts/logs/anykernel.final.sh
 
       - name: Collect logs
         if: always()
@@ -216,7 +181,6 @@ AK3
           cp -f /tmp/build-result.log artifacts/logs/build-result.log || true
           cp -f /tmp/ksu_susfs.config artifacts/logs/ksu_susfs.config || true
           cp -f kernel_src/out/.config artifacts/logs/final.config || true
-          find kernel_src -type f \( -name "*.rej" -o -name "*.orig" \) -exec cp --parents {} artifacts/logs/ \; || true
 
       - name: Upload AnyKernel zip
         if: success()
