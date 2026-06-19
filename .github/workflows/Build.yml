@@ -158,6 +158,9 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
           cp -f kernel_src/out/arch/arm64/boot/Image AnyKernel3/Image
           sed -i "s/^kernel.string=.*/kernel.string=${{ inputs.kernel_name }}/" AnyKernel3/anykernel.sh || true
+          # Fix unsupported device check for spinel
+          sed -i 's/^do\.devicecheck=.*/do.devicecheck=0/' AnyKernel3/anykernel.sh || true
+          sed -i 's/^do\.modules=.*/do.modules=0/' AnyKernel3/anykernel.sh || true
 
           DATE="$(date +%Y%m%d-%H%M)"
           ZIP_NAME="${{ inputs.kernel_name }}-${DATE}.zip"
