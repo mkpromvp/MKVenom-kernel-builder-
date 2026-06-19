@@ -126,38 +126,26 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
           cp -f kernel_src/out/arch/arm64/boot/Image AnyKernel3/Image
 
-          cat > AnyKernel3/anykernel.sh <<'AK3'
-### AnyKernel3 - kernel-only script (no ramdisk unpack)
+          # 1) Device check: spinel only
+          sed -i 's/^kernel.string=.*/kernel.string=${{ inputs.kernel_name }}/' AnyKernel3/anykernel.sh
+          sed -i 's/^do\.devicecheck=.*/do.devicecheck=1/' AnyKernel3/anykernel.sh
+          sed -i 's/^device\.name1=.*/device.name1=spinel/' AnyKernel3/anykernel.sh
+          sed -i 's/^device\.name2=.*/device.name2=/' AnyKernel3/anykernel.sh
+          sed -i 's/^device\.name3=.*/device.name3=/' AnyKernel3/anykernel.sh
+          sed -i 's/^device\.name4=.*/device.name4=/' AnyKernel3/anykernel.sh
+          sed -i 's/^device\.name5=.*/device.name5=/' AnyKernel3/anykernel.sh
 
-properties() { '
-kernel.string=__KERNEL_STRING__
-do.devicecheck=1
-do.modules=0
-do.systemless=0
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=spinel
-device.name2=
-device.name3=
-device.name4=
-device.name5=
-supported.versions=
-supported.patchlevels=
-supported.vendorpatchlevels=
-'; } # end properties
+          # 2) Modern partition detection (A/B safe)
+          sed -i 's|^BLOCK=.*|BLOCK=auto;|' AnyKernel3/anykernel.sh
+          sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=auto;|' AnyKernel3/anykernel.sh
 
-BLOCK=auto;
-IS_SLOT_DEVICE=auto;
-RAMDISK_COMPRESSION=auto;
-PATCH_VBMETA_FLAG=auto;
+          # 3) Kernel-only mode: no ramdisk unpack/repack
+          sed -i 's/^[[:space:]]*dump_boot;/split_boot;/' AnyKernel3/anykernel.sh
+          sed -i '0,/^[[:space:]]*write_boot;/{s//flash_boot;/}' AnyKernel3/anykernel.sh
 
-. tools/ak3-core.sh;
-
-split_boot;
-flash_boot;
-AK3
-
-          sed -i "s|__KERNEL_STRING__|${{ inputs.kernel_name }}|g" AnyKernel3/anykernel.sh
+          # 4) Remove sample ramdisk patch section that causes failures on modern devices
+          sed -i '/^# init.rc$/,/^## end boot install$/d' AnyKernel3/anykernel.sh
+          echo '## end boot install' >> AnyKernel3/anykernel.sh
 
           DATE="$(date +%Y%m%d-%H%M)"
           ZIP_NAME="${{ inputs.kernel_name }}-${DATE}.zip"
@@ -171,6 +159,7 @@ AK3
           cp -f kernel_src/out/arch/arm64/boot/Image artifacts/Image
           cp -f kernel_src/out/.config artifacts/gki.config
           cp -f AnyKernel3/anykernel.sh artifacts/logs/anykernel.final.sh
+
 
       - name: Collect logs
         if: always()
