@@ -130,9 +130,22 @@ jobs:
           ./scripts/kconfig/merge_config.sh -m -O out out/.config /tmp/ksu_susfs.config
           make $MAKE_FLAGS olddefconfig
 
+          # Reduce linker pressure to avoid SIGTERM at LTO stage
+          ./scripts/config --file out/.config -d LTO_CLANG_FULL -e LTO_CLANG_THIN || true
+          ./scripts/config --file out/.config -d DEBUG_INFO -d DEBUG_INFO_BTF || true
+          make $MAKE_FLAGS olddefconfig
+
           set +e
-          make $MAKE_FLAGS -j"$(nproc)" 2>&1 | tee /tmp/kernel-build.log
-          BUILD_RC=${PIPESTATUS[0]}
+          (
+            make $MAKE_FLAGS -j3 2>&1 | tee /tmp/kernel-build.log
+          ) &
+          MAKE_PID=$!
+          while kill -0 "$MAKE_PID" 2>/dev/null; do
+            echo "[keepalive] $(date +%H:%M:%S) building..."
+            sleep 60
+          done
+          wait "$MAKE_PID"
+          BUILD_RC=$?
           echo "BUILD_RC=$BUILD_RC" | tee /tmp/build-result.log
           set -e
           [ "$BUILD_RC" -eq 0 ] || exit "$BUILD_RC"
