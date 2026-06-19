@@ -158,31 +158,41 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
           cp -f kernel_src/out/arch/arm64/boot/Image AnyKernel3/Image
 
-          # Smart + safe AnyKernel3 config for spinel only
-          sed -i "s/^kernel.string=.*/kernel.string=${{ inputs.kernel_name }}/" AnyKernel3/anykernel.sh || true
+          # Smart + safe AnyKernel3 config for spinel only (kernel-only flash)
+          cat > AnyKernel3/anykernel.sh <<'AK3'
+### AnyKernel3 Ramdisk-less Kernel Flash Script
+properties() { '
+kernel.string=${{ inputs.kernel_name }}
+do.devicecheck=1
+do.modules=0
+do.systemless=0
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=spinel
+device.name2=
+device.name3=
+device.name4=
+device.name5=
+supported.versions=
+supported.patchlevels=
+supported.vendorpatchlevels=
+'; }
 
-          # Device gate
-          sed -i 's/^do\.devicecheck=.*/do.devicecheck=1/' AnyKernel3/anykernel.sh || true
-          sed -i 's/^device\.name1=.*/device.name1=spinel/' AnyKernel3/anykernel.sh || true
-          sed -i 's/^device\.name2=.*/device.name2=/' AnyKernel3/anykernel.sh || true
-          sed -i 's/^device\.name3=.*/device.name3=/' AnyKernel3/anykernel.sh || true
-          sed -i 's/^device\.name4=.*/device.name4=/' AnyKernel3/anykernel.sh || true
-          sed -i 's/^device\.name5=.*/device.name5=/' AnyKernel3/anykernel.sh || true
+# Kernel-only mode
+BLOCK=auto;
+IS_SLOT_DEVICE=auto;
+RAMDISK_COMPRESSION=auto;
+PATCH_VBMETA_FLAG=auto;
 
-          # Partition/slot auto-detect for modern A/B devices
-          sed -i 's|^BLOCK=.*|BLOCK=auto;|' AnyKernel3/anykernel.sh || true
-          sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=auto;|' AnyKernel3/anykernel.sh || true
+. tools/ak3-core.sh;
 
-          # Safer mode: no ramdisk modifications
-          sed -i 's/^do\.modules=.*/do.modules=0/' AnyKernel3/anykernel.sh || true
-          sed -i 's/^do\.systemless=.*/do.systemless=0/' AnyKernel3/anykernel.sh || true
-          sed -i 's/^do\.cleanup=.*/do.cleanup=1/' AnyKernel3/anykernel.sh || true
-          sed -i 's/^do\.cleanuponabort=.*/do.cleanuponabort=0/' AnyKernel3/anykernel.sh || true
+# Important: no ramdisk unpack/repack
+split_boot;
+flash_boot;
+AK3
 
-          # Keep generated anykernel.sh for diagnostics
           mkdir -p artifacts/logs
           cp -f AnyKernel3/anykernel.sh artifacts/logs/anykernel.final.sh
-
           DATE="$(date +%Y%m%d-%H%M)"
           ZIP_NAME="${{ inputs.kernel_name }}-${DATE}.zip"
 
