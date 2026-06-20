@@ -80,6 +80,13 @@ jobs:
           set -e
           cd kernel_src
 
+          # Prevent OOM kill at LTO stage on GitHub runner
+          sudo fallocate -l 12G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=12288
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
           MAKE_FLAGS="
             ARCH=arm64
             O=out
@@ -93,7 +100,8 @@ jobs:
           make $MAKE_FLAGS mrproper
           mkdir -p out
 
-          printf '%s\n' \
+          printf '%s
+' \
             'CONFIG_KSU=y' \
             'CONFIG_KSU_DEBUG=n' \
             'CONFIG_KSU_SUSFS=y' \
@@ -113,12 +121,25 @@ jobs:
           ./scripts/kconfig/merge_config.sh -m -O out out/.config /tmp/ksu_susfs.config
           make $MAKE_FLAGS olddefconfig
 
+          # Disable heavy link-time features that trigger 143/OOM
+          ./scripts/config --file out/.config -d LTO_CLANG -d LTO_CLANG_FULL -d LTO_CLANG_THIN || true
+          ./scripts/config --file out/.config -d THINLTO || true
+          ./scripts/config --file out/.config -d CFI_CLANG -d CFI_PERMISSIVE || true
+          ./scripts/config --file out/.config -d SHADOW_CALL_STACK || true
+          ./scripts/config --file out/.config -d DEBUG_INFO_BTF || true
+          make $MAKE_FLAGS olddefconfig
+
           set +e
-          make $MAKE_FLAGS -j3 2>&1 | tee /tmp/kernel-build.log
+          make $MAKE_FLAGS -j2 2>&1 | tee /tmp/kernel-build.log
           BUILD_RC=${PIPESTATUS[0]}
           echo "BUILD_RC=$BUILD_RC" | tee /tmp/build-result.log
           set -e
+
+          sudo swapoff /swapfile || true
+          sudo rm -f /swapfile || true
+
           [ "$BUILD_RC" -eq 0 ] || exit "$BUILD_RC"
+
 
       - name: Pack AnyKernel3 (spinel only, kernel-only flash)
         run: |
