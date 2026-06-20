@@ -139,26 +139,94 @@ jobs:
           set -e
           [ "$BUILD_RC" -eq 0 ] || exit "$BUILD_RC"
 
-      - name: Pack AnyKernel3 (spinel only, kernel-only flash)
+      - name: Pack AnyKernel3 (spinel smart flash + real logs)
         run: |
           set -e
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
           cp -f kernel_src/out/arch/arm64/boot/Image AnyKernel3/Image
 
-          sed -i 's/^kernel.string=.*/kernel.string=${{ inputs.kernel_name }}/' AnyKernel3/anykernel.sh
-          sed -i 's/^do\.devicecheck=.*/do.devicecheck=1/' AnyKernel3/anykernel.sh
-          sed -i 's/^device\.name1=.*/device.name1=spinel/' AnyKernel3/anykernel.sh
-          sed -i 's/^device\.name2=.*/device.name2=/' AnyKernel3/anykernel.sh
-          sed -i 's/^device\.name3=.*/device.name3=/' AnyKernel3/anykernel.sh
-          sed -i 's/^device\.name4=.*/device.name4=/' AnyKernel3/anykernel.sh
-          sed -i 's/^device\.name5=.*/device.name5=/' AnyKernel3/anykernel.sh
+          cat > AnyKernel3/anykernel.sh <<'AK3'
+### AnyKernel3 - smart environment detection for spinel
 
-          sed -i 's|^BLOCK=.*|BLOCK=auto;|' AnyKernel3/anykernel.sh
-          sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=auto;|' AnyKernel3/anykernel.sh
-          sed -i 's/^[[:space:]]*dump_boot;/SLOT_SELECT=active;\nsplit_boot;/' AnyKernel3/anykernel.sh
-          sed -i '0,/^[[:space:]]*write_boot;/{s//flash_boot;\n\nreset_ak keep;\nSLOT_SELECT=inactive;\nsplit_boot;\nflash_boot;/}' AnyKernel3/anykernel.sh
-          sed -i '/^# init.rc$/,/^## end boot install$/d' AnyKernel3/anykernel.sh
-          echo '## end boot install' >> AnyKernel3/anykernel.sh
+properties() { '
+kernel.string=__KERNEL_STRING__
+do.devicecheck=1
+do.modules=0
+do.systemless=0
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=spinel
+device.name2=
+device.name3=
+device.name4=
+device.name5=
+supported.versions=
+supported.patchlevels=
+supported.vendorpatchlevels=
+'; } # end properties
+
+BLOCK=auto;
+IS_SLOT_DEVICE=auto;
+RAMDISK_COMPRESSION=auto;
+PATCH_VBMETA_FLAG=auto;
+
+. tools/ak3-core.sh;
+
+LOGFILE=/tmp/ak3_spinel_flash.log
+: > "$LOGFILE"
+
+logp() {
+  ui_print "$1"
+  echo "$1" >> "$LOGFILE"
+}
+
+flash_pair() {
+  TARGET="$1"
+  for SLOT in active inactive; do
+    reset_ak keep
+    BLOCK="$TARGET"
+    IS_SLOT_DEVICE=auto
+    SLOT_SELECT="$SLOT"
+    logp "- Try target=$TARGET slot=$SLOT"
+
+    if split_boot && flash_boot; then
+      logp "  OK target=$TARGET slot=$SLOT"
+    else
+      logp "  FAIL target=$TARGET slot=$SLOT"
+      return 1
+    fi
+  done
+  return 0
+}
+
+logp "- Device: $(getprop ro.product.device 2>/dev/null)"
+logp "- Slot suffix: $(getprop ro.boot.slot_suffix 2>/dev/null)"
+logp "- Boot mode: $(getprop ro.bootmode 2>/dev/null)"
+
+SUCCESS=0
+USED_TARGET=""
+
+for T in boot init_boot vendor_boot; do
+  if flash_pair "$T"; then
+    SUCCESS=1
+    USED_TARGET="$T"
+    break
+  fi
+done
+
+if [ "$SUCCESS" -ne 1 ]; then
+  logp "Aborting: no compatible target (boot/init_boot/vendor_boot) flashed."
+  cp -f "$LOGFILE" /sdcard/Download/ak3_spinel_flash.log 2>/dev/null || true
+  cp -f "$LOGFILE" /data/local/tmp/ak3_spinel_flash.log 2>/dev/null || true
+  abort
+fi
+
+logp "- Flash completed using target=$USED_TARGET"
+cp -f "$LOGFILE" /sdcard/Download/ak3_spinel_flash.log 2>/dev/null || true
+cp -f "$LOGFILE" /data/local/tmp/ak3_spinel_flash.log 2>/dev/null || true
+AK3
+
+          sed -i "s|__KERNEL_STRING__|${{ inputs.kernel_name }}|g" AnyKernel3/anykernel.sh
 
           DATE="$(date +%Y%m%d-%H%M)"
           ZIP_NAME="${{ inputs.kernel_name }}-${DATE}.zip"
@@ -172,6 +240,7 @@ jobs:
           cp -f kernel_src/out/arch/arm64/boot/Image artifacts/Image
           cp -f kernel_src/out/.config artifacts/gki.config
           cp -f AnyKernel3/anykernel.sh artifacts/logs/anykernel.final.sh
+
 
       - name: Collect logs
         if: always()
