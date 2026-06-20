@@ -1,4 +1,4 @@
-### AnyKernel3 - spinel stable script (official AK3 style)
+### AnyKernel3 - spinel stable script (kernel-only, dual-slot)
 
 properties() { '
 kernel.string=__KERNEL_NAME__
@@ -17,7 +17,6 @@ supported.patchlevels=
 supported.vendorpatchlevels=
 '; } # end properties
 
-# Use partition name + auto slot detection
 BLOCK=boot;
 IS_SLOT_DEVICE=auto;
 RAMDISK_COMPRESSION=auto;
@@ -25,7 +24,7 @@ PATCH_VBMETA_FLAG=auto;
 
 . tools/ak3-core.sh;
 
-# active slot (kernel-only mode)
+# active slot
 split_boot;
 flash_boot;
 

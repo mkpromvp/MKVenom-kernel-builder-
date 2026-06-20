@@ -88,8 +88,8 @@ jobs:
           SWAPFILE="/swapfile-${GITHUB_RUN_ID:-local}"
           sudo swapoff "$SWAPFILE" 2>/dev/null || true
           sudo rm -f "$SWAPFILE"
-          if ! sudo fallocate -l 12G "$SWAPFILE"; then
-            sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=12288 status=none
+          if ! sudo fallocate -l 8G "$SWAPFILE"; then
+            sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=8192 status=none
           fi
           sudo chmod 600 "$SWAPFILE"
           sudo mkswap "$SWAPFILE"
@@ -143,54 +143,12 @@ jobs:
           set -e
           [ "$BUILD_RC" -eq 0 ] || exit "$BUILD_RC"
 
-      - name: Pack AnyKernel3 (spinel stable)
+      - name: Pack AnyKernel3
         run: |
           set -e
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
-          ls -lah "$GITHUB_WORKSPACE/.github/scripts" || true
           cp -f kernel_src/out/arch/arm64/boot/Image AnyKernel3/Image
-          if [ ! -f "$GITHUB_WORKSPACE/.github/scripts/anykernel_spinel.sh" ]; then
-            mkdir -p "$GITHUB_WORKSPACE/.github/scripts"
-            cat > "$GITHUB_WORKSPACE/.github/scripts/anykernel_spinel.sh" <<'SH'
-### AnyKernel3 - spinel stable script (official AK3 style)
-
-properties() { '
-kernel.string=__KERNEL_NAME__
-do.devicecheck=1
-do.modules=0
-do.systemless=0
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=spinel
-device.name2=
-device.name3=
-device.name4=
-device.name5=
-supported.versions=
-supported.patchlevels=
-supported.vendorpatchlevels=
-'; } # end properties
-
-BLOCK=boot;
-IS_SLOT_DEVICE=auto;
-RAMDISK_COMPRESSION=auto;
-PATCH_VBMETA_FLAG=auto;
-
-. tools/ak3-core.sh;
-
-split_boot;
-flash_boot;
-
-reset_ak keep;
-SLOT_SELECT=inactive;
-BLOCK=boot;
-IS_SLOT_DEVICE=auto;
-split_boot;
-flash_boot;
-SH
-          fi
-
-          cp -f "$GITHUB_WORKSPACE/.github/scripts/anykernel_spinel.sh" AnyKernel3/anykernel.sh
+          cp -f .github/scripts/anykernel_spinel.sh AnyKernel3/anykernel.sh
           sed -i "s|__KERNEL_NAME__|${{ inputs.kernel_name }}|g" AnyKernel3/anykernel.sh
 
           DATE="$(date +%Y%m%d-%H%M)"
@@ -202,8 +160,9 @@ SH
 
           mkdir -p artifacts artifacts/logs
           mv -f "${ZIP_NAME}" artifacts/
+          cp -f kernel_src/out/arch/arm64/boot/Image artifacts/Image
+          cp -f kernel_src/out/.config artifacts/gki.config
           cp -f AnyKernel3/anykernel.sh artifacts/logs/anykernel.final.sh
-
 
       - name: Collect logs
         if: always()
