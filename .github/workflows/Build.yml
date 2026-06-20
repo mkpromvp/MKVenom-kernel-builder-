@@ -138,7 +138,7 @@ jobs:
           set -e
           [ "$BUILD_RC" -eq 0 ] || exit "$BUILD_RC"
 
-      - name: Pack AnyKernel3 (spinel smart direct-flash)
+      - name: Pack AnyKernel3 (spinel stable)
         run: |
           set -e
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
@@ -155,8 +155,6 @@ jobs:
 
           mkdir -p artifacts artifacts/logs
           mv -f "${ZIP_NAME}" artifacts/
-          cp -f kernel_src/out/arch/arm64/boot/Image artifacts/Image
-          cp -f kernel_src/out/.config artifacts/gki.config
           cp -f AnyKernel3/anykernel.sh artifacts/logs/anykernel.final.sh
 
 
