@@ -142,8 +142,9 @@ jobs:
         run: |
           set -e
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          ls -lah "$GITHUB_WORKSPACE/.github/scripts" || true
           cp -f kernel_src/out/arch/arm64/boot/Image AnyKernel3/Image
-          cp -f .github/scripts/anykernel_spinel.sh AnyKernel3/anykernel.sh
+          cp -f "$GITHUB_WORKSPACE/.github/scripts/anykernel_spinel.sh" AnyKernel3/anykernel.sh
           sed -i "s|__KERNEL_NAME__|${{ inputs.kernel_name }}|g" AnyKernel3/anykernel.sh
 
           DATE="$(date +%Y%m%d-%H%M)"

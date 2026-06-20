@@ -17,9 +17,7 @@ supported.patchlevels=
 supported.vendorpatchlevels=
 '; } # end properties
 
-# IMPORTANT:
-# - use partition name (not manual path)
-# - use slot auto-detection
+# Use partition name + auto slot detection
 BLOCK=boot;
 IS_SLOT_DEVICE=auto;
 RAMDISK_COMPRESSION=auto;
@@ -27,7 +25,7 @@ PATCH_VBMETA_FLAG=auto;
 
 . tools/ak3-core.sh;
 
-# active slot (kernel-only, no ramdisk unpack)
+# active slot (kernel-only mode)
 split_boot;
 flash_boot;
 
