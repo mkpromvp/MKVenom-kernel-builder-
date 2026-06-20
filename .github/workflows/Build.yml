@@ -155,8 +155,8 @@ jobs:
 
           sed -i 's|^BLOCK=.*|BLOCK=auto;|' AnyKernel3/anykernel.sh
           sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=auto;|' AnyKernel3/anykernel.sh
-          sed -i 's/^[[:space:]]*dump_boot;/split_boot;/' AnyKernel3/anykernel.sh
-          sed -i '0,/^[[:space:]]*write_boot;/{s//flash_boot;/}' AnyKernel3/anykernel.sh
+          sed -i 's/^[[:space:]]*dump_boot;/SLOT_SELECT=active;\nsplit_boot;/' AnyKernel3/anykernel.sh
+          sed -i '0,/^[[:space:]]*write_boot;/{s//flash_boot;\n\nreset_ak keep;\nSLOT_SELECT=inactive;\nsplit_boot;\nflash_boot;/}' AnyKernel3/anykernel.sh
           sed -i '/^# init.rc$/,/^## end boot install$/d' AnyKernel3/anykernel.sh
           echo '## end boot install' >> AnyKernel3/anykernel.sh
 
